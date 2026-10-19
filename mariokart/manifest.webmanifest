@@ -1,0 +1,11 @@
+{
+  "name": "Kart Club",
+  "short_name": "Kart Club",
+  "description": "Private Mario Kart Wii Grand Prix score tracker",
+  "start_url": "./#/events",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#14161c",
+  "theme_color": "#c81e2a",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}

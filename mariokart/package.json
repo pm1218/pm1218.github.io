@@ -1,0 +1,7 @@
+{
+  "name": "mkwii-gp-tracker",
+  "private": true,
+  "type": "module",
+  "description": "Static Mario Kart Wii Grand Prix tracker (GitHub Pages + Supabase)",
+  "scripts": { "test": "node --test tests/*.test.mjs" }
+}
