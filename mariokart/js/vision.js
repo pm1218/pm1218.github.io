@@ -27,7 +27,8 @@
 import { planScreen, finishScreen, isolateDigits, detectHumans } from './wii-layout.js';
 
 const TESSERACT_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
-const OPENCV_URL = 'https://docs.opencv.org/4.10.0/opencv.js';
+// docs.opencv.org can't be loaded cross-site reliably; jsDelivr serves the same 4.10 build.
+const OPENCV_URL = 'https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.10.0-release.1/dist/opencv.js';
 const WORK = 1600; // pass-1 working width
 const HI = 3200;   // cell crops come from up to this width
 export const ICON_SIZE = 48;
