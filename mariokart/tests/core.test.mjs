@@ -1,21 +1,25 @@
 // Run with:  node --test tests/
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 
 import { pointsFor, CUPS, MAX_GP_TOTAL } from '../js/data.js';
 import { similarity } from '../js/text.js';
-import { parsePlace, parsePoints, parseRows, parseScreen } from '../js/ocr-parse.js';
+import { planScreen, finishScreen, isolateDigits, decodeDescending, pointsCandidates, parseOrdinal, parseNumber, matchName, detectHumans, vocabulary } from '../js/wii-layout.js';
 import { suggestIdentities } from '../js/identity.js';
 import {
   emptyDraft, makeParticipant, validateDraft, computeStandings, toPayload,
   draftFromScreens, completedRaceCount, racePlacementOf,
 } from '../js/scoring.js';
 import { powerRankings, eloRatings, consistencyMetrics, trackStats, headToHead, insights, fullReport } from '../js/analytics.js';
-import { groupRowBoxes } from '../js/vision.js';
 import { profiles, gps } from './sample-data.mjs';
 
-const fixture = (n) => JSON.parse(readFileSync(new URL(`./fixtures/${n}.ocr.json`, import.meta.url)));
+// OCR fixtures from 17 real photos of a TV (text + boxes only; no images).
+const FIX_DIR = new URL('./fixtures/wii/', import.meta.url);
+const fixtures = readdirSync(FIX_DIR).filter((f) => f.endsWith('.json')).map((f) => JSON.parse(readFileSync(new URL(f, FIX_DIR))));
+const MIIS = { extraNames: ['bob', 'dog man'] };
+const readFixture = (fx) => finishScreen(planScreen(fx.pass1, MIIS), fx.cells, MIIS);
+const fixture = (id) => fixtures.find((f) => f.id === id);
 
 test('points table matches Mario Kart Wii', () => {
   assert.deepEqual([1, 2, 3, 4, 12].map(pointsFor), [15, 12, 10, 8, 0]);
@@ -25,62 +29,99 @@ test('points table matches Mario Kart Wii', () => {
 });
 
 test('OCR token repair', () => {
-  assert.equal(parsePlace('1st'), 1);
-  assert.equal(parsePlace('lst'), 1);
-  assert.equal(parsePlace('12'), 12);
-  assert.equal(parsePlace('Mario'), null);
-  assert.deepEqual(parsePoints('+15'), { value: 15, gained: true });
-  assert.deepEqual(parsePoints('4O'), { value: 40, gained: false });
-  assert.equal(parsePoints('B'), null, 'name fragments are never points');
+  assert.equal(parseOrdinal('1st'), 1);
+  assert.equal(parseOrdinal('lst'), 1);
+  assert.equal(parseOrdinal('12th'), 12);
+  assert.equal(parseOrdinal('Sth'), null, '"Sth" could be 5th, 8th or 9th');
+  assert.deepEqual(parseNumber('+15'), { value: 15, gained: true });
+  assert.deepEqual(parseNumber('46pts'), { value: 46, gained: false });
+  assert.equal(parseNumber('B'), null, 'name fragments are never points');
+  assert.equal(matchName('Manito', vocabulary()).value, 'Mario');
+  assert.equal(matchName('Koopa Tioopa', vocabulary()).value, 'Koopa Troopa');
   assert.ok(similarity('Prateek', 'PRATEEK') === 1);
 });
 
-test('final standings photo → 12 rows with correct totals', () => {
-  const p = parseRows(fixture('final_photo'));
-  assert.equal(p.kind, 'final');
-  assert.equal(p.rows.length, 12);
-  assert.deepEqual(p.rows.map((r) => r.points), [52, 47, 41, 36, 33, 27, 22, 17, 12, 9, 5, 2]);
-  assert.deepEqual(p.rows.slice(0, 3).map((r) => r.name), ['Prateek', 'Mario', 'Anya']);
-  assert.equal(p.rows[1].cpuCharacter, 'Mario');
-  assert.ok(p.rows.every((r) => r.iconBox));
-  assert.deepEqual(p.issues, []);
+test('real photos: screen type, names, totals and players', () => {
+  let screens = 0; let names = 0; let pts = 0; let total = 0;
+  let pNames = 0; let pPts = 0; let pTotal = 0; let found = 0; let falsePlayers = 0;
+  for (const fx of fixtures) {
+    const r = readFixture(fx);
+    screens += r.kind === fx.truth.kind;
+    fx.truth.rows.forEach(([name, points], i) => {
+      const row = r.rows[i];
+      total++; names += row.name === name; pts += row.points === points;
+      const human = fx.truth.humans.includes(i + 1);
+      if (human) { pTotal++; pNames += row.name === name; pPts += row.points === points; found += Boolean(row.human); } else falsePlayers += Boolean(row.human);
+    });
+  }
+  // Locks in measured accuracy (see README → Image analysis engine).
+  assert.equal(screens, fixtures.length, 'every screen classified');
+  assert.ok(names / total >= 0.85, `names ${names}/${total}`);
+  assert.ok(pts / total >= 0.62, `totals ${pts}/${total}`);
+  assert.ok(pNames / pTotal >= 0.84, `player names ${pNames}/${pTotal}`);
+  assert.ok(pPts / pTotal >= 0.78, `player totals ${pPts}/${pTotal}`);
+  assert.ok(found / pTotal >= 0.85 && falsePlayers <= 4, `players found ${found}/${pTotal}, false ${falsePlayers}`);
 });
 
-test('post-race photo → placements from +gained', () => {
-  const p = parseRows(fixture('race_photo'));
-  assert.equal(p.kind, 'race');
-  assert.deepEqual(p.rows.slice(0, 4).map((r) => [r.name, r.gained, racePlacementOf(r)]), [
-    ['Anya', 15, 1], ['Prateek', 12, 2], ['Mario', 10, 3], ['Dev', 8, 4],
-  ]);
+test('a clean standings photo reads perfectly', () => {
+  const r = readFixture(fixture('5438'));
+  assert.equal(r.kind, 'standings');
+  assert.equal(r.phase, 'totals');
+  assert.deepEqual(r.rows.map((x) => x.name), fixture('5438').truth.rows.map((x) => x[0]));
+  assert.deepEqual(r.rows.map((x) => x.points), fixture('5438').truth.rows.map((x) => x[1]));
+  assert.deepEqual(r.rows.filter((x) => x.human).map((x) => x.place), [1, 2, 3, 6]);
 });
 
-test('sparse-mode parser groups words into lines', () => {
-  const w = (text, x, y) => ({ text, confidence: 90, bbox: { x0: x, y0: y, x1: x + 20, y1: y + 20 } });
-  const p = parseScreen([w('1', 10, 10), w('Anya', 80, 12), w('52', 400, 9), w('2', 10, 50), w('Mario', 80, 51), w('47', 400, 50)]);
-  assert.deepEqual(p.rows.map((r) => [r.place, r.name, r.points]), [[1, 'Anya', 52], [2, 'Mario', 47]]);
+test('an after-race screen is recognised and pins race placements', () => {
+  const r = readFixture(fixture('5428'));
+  assert.equal(r.phase, 'race');
+  assert.deepEqual(r.rows.slice(0, 3).map((x) => [x.name, x.gained, racePlacementOf(x)]), [['Diddy Kong', 15, 1], ['Mario', 12, 2], ['Waluigi', 10, 3]]);
 });
 
-test('row grouping merges the name block and the points block', () => {
-  const rows = groupRowBoxes([[100, 40, 500, 50], [1000, 42, 200, 48], [100, 100, 480, 50], [1000, 101, 200, 49], [0, 5, 900, 2]], 1400);
-  assert.equal(rows.length, 2);
-  assert.deepEqual(rows[0], [100, 40, 1100, 50]);
+test('digit isolation drops "pts", bar edges and specks', () => {
+  // 40×20 mask: a bar edge across row 0, two "digits" (8×14), a small "pts" blob, a speck.
+  const W = 40; const H = 20; const data = new Uint8Array(W * H);
+  const fill = (x0, y0, w, h) => { for (let y = y0; y < y0 + h; y++) for (let x = x0; x < x0 + w; x++) data[y * W + x] = 255; };
+  fill(0, 0, 40, 1);       // bar edge
+  fill(10, 3, 7, 14);      // digit 1
+  fill(19, 3, 7, 14);      // digit 2
+  fill(29, 10, 6, 5);      // "pts"
+  fill(2, 15, 2, 2);       // speck
+  const iso = isolateDigits({ data, width: W, height: H });
+  assert.equal(iso.glyphs, 2);
+  assert.equal(iso.width, 16 + 28);
 });
 
-test('identity suggestion uses Mii name, then favourite character', () => {
+test('totals decode in descending order, skipping bad reads', () => {
+  const m = (o) => new Map(Object.entries(o).map(([k, v]) => [Number(k), v]));
+  assert.deepEqual(decodeDescending([m({ 46: 2 }), m({ 4: 1.2, 45: 1 }), m({ 45: 1.5 }), m({ 0: 0.5 }), m({ 29: 1.4 })]), [46, 45, 45, null, 29]);
+  const c = pointsCandidates([{ text: '45', confidence: 80 }, { text: '5', confidence: 90 }]);
+  assert.ok(c.get(45) > c.get(5), 'a lone "5" supports "45"');
+});
+
+test('player bars: coloured vs plain rows', () => {
+  const final = detectHumans('final', [{ place: 1, h: 150, s: 200, v: 220 }, { place: 2, h: 117, s: 220, v: 150 }, { place: 3, h: 116, s: 225, v: 148 }, { place: 4, h: 95, s: 200, v: 210 }]);
+  assert.deepEqual(final, { 1: true, 2: false, 3: false, 4: true });
+});
+
+test('identity suggestion: Mii name, then favourite character on a player bar', () => {
   const rows = [
-    { name: 'Prateek', character: 'Yoshi', characterConfidence: 0.9 },
-    { name: 'Mario', character: 'Mario', characterConfidence: 0.7, cpuCharacter: 'Mario' },
-    { name: 'Player 3', character: 'Bowser', characterConfidence: 0.8 },
-    { name: 'Player 4', character: 'Peach', characterConfidence: 0.85 },
+    { name: 'PRATEEK', character: 'Yoshi', characterConfidence: 0.7, human: true },
+    { name: 'Mario', character: 'Mario', characterConfidence: 0.9, human: false },
+    { name: 'Bowser', character: 'Bowser', characterConfidence: 0.9, human: true },
+    { name: 'Peach', character: 'Peach', characterConfidence: 0.9, human: true },
+    { name: 'Peach', character: 'Baby Peach', characterConfidence: 0.9, human: false },
   ];
   const s = suggestIdentities(rows, profiles);
-  assert.equal(s[0].profile_id, 'u-pm');
-  assert.equal(s[1].is_cpu, true);
+  assert.equal(s[0].profile_id, 'u-pm', 'Mii name');
+  assert.equal(s[1].is_cpu, true, 'no player bar → CPU');
   assert.equal(s[2].profile_id, 'u-dv', 'unique favourite Bowser → Dev');
   assert.equal(s[3].profile_id, 'u-an', 'unique favourite Peach → Anya');
-  // Shared favourite (Yoshi: Prateek + Sam) is weak evidence on its own.
-  const shared = suggestIdentities([{ name: '???', character: 'Yoshi', characterConfidence: 0.5 }], profiles);
+  assert.equal(s[4].is_cpu, true);
+  // A shared favourite (Yoshi: Prateek + Sam) is weak evidence on its own.
+  const shared = suggestIdentities([{ name: 'Yoshi', character: 'Yoshi', characterConfidence: 0.5, human: true }], profiles);
   assert.equal(shared[0].profile_id, null);
+  assert.equal(shared[0].is_cpu, false, 'a player we could not identify is not a CPU');
 });
 
 function threeKartDraft() {
@@ -132,38 +173,37 @@ test('final total mode: totals 0-60, ties share a place', () => {
   assert.equal(toPayload(d).races.length, 0);
 });
 
-test('photo normalisation: 3 race screens is refused with a pointer to final totals', () => {
-  const race = parseRows(fixture('race_photo'));
+test('photo normalisation: 3 after-race screens are refused with a pointer to final totals', () => {
+  const race = readFixture(fixture('5428'));
   assert.throws(
     () => draftFromScreens({ screens: [race, race, race], identities: [], profiles, cup: 'Mushroom' }),
-    (e) => e.code === 'INCOMPLETE_RACES' && /final standings/.test(e.message),
+    (e) => e.code === 'INCOMPLETE_RACES' && /final results/.test(e.message),
   );
 });
 
-test('photo normalisation: 4 race screens → race-mode draft with computed totals', () => {
-  const race = parseRows(fixture('race_photo'));
+test('photo normalisation: 4 after-race screens → race-mode draft with computed totals', () => {
+  const race = readFixture(fixture('5428'));
   const ids = suggestIdentities(race.rows, profiles);
-  const { draft, issues } = draftFromScreens({ screens: [race, race, race, race], identities: ids, profiles, cup: 'Mushroom' });
+  const { draft } = draftFromScreens({ screens: [race, race, race, race], identities: ids, profiles, cup: 'Mushroom' });
   assert.equal(draft.mode, 'races');
   assert.equal(draft.source, 'photo_races');
-  assert.deepEqual(issues, []);
-  assert.equal(completedRaceCount(draft), 4);
-  const st = computeStandings(draft);
-  assert.equal(st[0].total, 60);
   assert.equal(draft.races[0].track, 'Luigi Circuit');
-  const anya = draft.participants.find((p) => p.profile_id === 'u-an');
-  assert.ok(anya, 'Anya linked by Mii name');
+  const named = draft.participants.filter((p) => p.ocr_name);
+  assert.ok(named.length >= 10);
+  const st = computeStandings(draft);
+  assert.equal(st[0].total, 60, 'first in all four races');
 });
 
-test('photo normalisation: final screen → total-mode draft', () => {
-  const fin = parseRows(fixture('final_photo'));
+test('photo normalisation: final results → total-mode draft; CPUs and players split', () => {
+  const fin = readFixture(fixture('7316'));
   const ids = suggestIdentities(fin.rows, profiles);
   const { draft } = draftFromScreens({ screens: [fin], identities: ids, profiles, cup: 'Star' });
   assert.equal(draft.mode, 'total');
   assert.equal(draft.participants.length, 12);
-  assert.equal(draft.participants[0].profile_id, 'u-pm');
-  assert.equal(draft.participants[0].final_total, 52);
-  assert.equal(draft.participants.filter((p) => p.is_cpu).length, 9);
+  assert.equal(draft.participants[3].character, 'Yoshi');
+  assert.equal(draft.participants[3].profile_id, 'u-pm', 'Yoshi on a player bar → a Yoshi fan');
+  assert.ok(draft.participants.filter((p) => p.is_cpu).length >= 7);
+  assert.throws(() => draftFromScreens({ screens: [fin, readFixture(fixture('5428'))], identities: [], profiles, cup: 'Star' }), /Mixing screens/);
 });
 
 test('analytics: power, elo, consistency, tracks, head-to-head', () => {

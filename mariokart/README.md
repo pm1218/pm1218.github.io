@@ -12,15 +12,16 @@ mariokart/
 │   ├── api.js         Supabase data layer (auth, tables, RPC, storage, edge function)
 │   ├── data.js        points table, characters, cups → tracks
 │   ├── scoring.js     internal scoring model, normalisation, 4-race rule (client side)
-│   ├── ocr-parse.js   OCR words → result rows (place / name / +gained / points / icon box)
-│   ├── vision.js      OpenCV.js + Tesseract.js pipeline, icon template matching
+│   ├── wii-layout.js  Mario Kart Wii screen reader: OCR words → rows, digit isolation, decoding (pure, tested)
+│   ├── vision.js      OpenCV.js + Tesseract.js pipeline on the phone, icon template matching
 │   ├── identity.js    "which member drove which kart" suggestions
 │   ├── analytics.js   power rankings, Elo, consistency, tracks, head-to-head, insights
 │   ├── text.js, ui.js helpers
 ├── supabase/
 │   ├── schema.sql                         tables, constraints, RLS, whitelist trigger, submit RPC
 │   └── functions/send-gp-summary/index.ts edge function: summary e-mail via Nodemailer
-└── tests/            node unit tests, real-Tesseract OCR fixtures, Playwright mobile smoke test
+└── tests/            unit tests, OCR fixtures from 17 real photos, desktop evaluation tools,
+                      Playwright mobile smoke test, in-browser vision check page
 ```
 
 ---
@@ -31,8 +32,9 @@ mariokart/
 2. **Group size < 25, a few GPs per session.** Data stays tiny (thousands of rows), so analytics are computed in the browser from the full dataset; no caching or background jobs.
 3. **Mario Kart Wii rules:** a Grand Prix is exactly 4 races; 12 karts; race points 15-12-10-8-7-6-5-4-3-2-1-0; max GP total 60. Cups map to fixed track orders, so picking the cup pre-fills the 4 tracks.
 4. **Karts:** a GP can include members, guests and CPUs. Only members are ranked, but every entered kart counts toward field size. You may enter just the humans; placements still range over 1-12 (e.g. 1st, 5th, 9th) because CPUs finished in between.
-5. **Score screens:** the Wii shows a 12-row list — place, character icon, name (Mii name for humans, character name for CPUs), "+gained" after a race, and points. Photos are taken of a TV with a phone (perspective, glare, blur).
-6. **Character icons are not shipped.** Nintendo artwork isn't redistributable, so the matcher starts empty and **learns from your own confirmed photos** (each confirmed GP saves its icon crops as labelled templates). Until then, characters come from CPU names and members' favourites, and the uploader picks from a dropdown.
+5. **Mario Kart Wii only.** Switch scores are a separate game and out of scope for now (a later project). Two Wii screens are read: the **after-race standings** (12 full-width bars; "+gained" while rows are in race order, then re-sorted by total) and the **final results** ("You got Nth place!", two columns of six). Each row shows the character's name (or a Mii name), its icon and the total; human players' rows have a coloured bar. Photos are phone shots of a TV: angled, glare, moiré, sometimes cropped.
+5a. **VS sessions vs Grand Prix:** your photos are "150cc VS" screens. A 4-race VS session scores exactly like a Grand Prix (max 60). Totals above 60 mean more than four races were played; the app flags those instead of storing them as one GP.
+6. **Character icons are not shipped.** Nintendo artwork isn't redistributable. On the Wii the character's name is printed on the row, so the character comes from the text; icons are only needed for rows showing a Mii name, and that matcher **learns from your own confirmed photos** (each confirmed GP saves its icon crops as labelled templates).
 7. **Login:** a 6-digit email code (OTP). Supabase Auth handles code generation, single use and expiry (set to 600 s = 10 min).
 8. **Email:** any SMTP account you own (e.g. Gmail with an app password, ~500 mails/day free). Supabase Edge Functions block ports 25/587, so port **465** is used.
 9. **Corrections:** confirmed GPs are locked; an admin can reopen one to fix it.
@@ -58,7 +60,7 @@ mariokart/
 - *It's the only way to honour "deploy on GitHub Pages" with real auth and a relational DB.* A Django/Flask app would need a separate paid-or-sleeping host (Render/Fly free tiers sleep or have been cut back) and Pages would just be a link to it.
 - *Zero DevOps.* No server to patch, no container, no cron. Supabase gives Postgres, auth, storage and functions behind one key; the frontend is plain files.
 - *Security lives in the database.* Row-Level Security means every request — from any client — is checked against the whitelist in Postgres. Score writes go through one `SECURITY DEFINER` function that enforces the 4-race rule; tables have no direct write policies, so the browser can't bypass it.
-- *OCR on the phone is free and private.* Tesseract.js/OpenCV.js run in the browser (WebAssembly), so there's no GPU/CPU bill and analysis takes seconds. Python EasyOCR would need a server with PyTorch (~1 GB RAM) — impossible on Pages and not free elsewhere. Tesseract is the stronger fit anyway: the game's text is a clean, fixed-layout UI font, which is exactly where Tesseract does well once rows are isolated.
+- *OCR on the phone is free and private.* Tesseract.js/OpenCV.js run in the browser (WebAssembly), so there's no GPU/CPU bill. Python EasyOCR would need a server with PyTorch (~1 GB RAM) — impossible on Pages and not free elsewhere. Tesseract is the stronger fit anyway: the game's text is a clean, fixed-layout UI font, which is exactly where Tesseract does well once rows are isolated.
 - *Maintainable.* ~2.5k lines of readable JS + one SQL file. No framework upgrades, no bundler.
 
 **Free/open-source**: every runtime component is open source; the only accounts are GitHub (have it), Supabase free tier, and an SMTP mailbox. Supabase itself can be self-hosted later with the same code.
@@ -141,32 +143,45 @@ Normalisation rules:
 
 ## 7. Image analysis engine
 
-`js/vision.js` (runs on the phone) + `js/ocr-parse.js` (pure, unit-tested):
+`js/vision.js` (OpenCV.js + Tesseract.js, runs on the phone) + `js/wii-layout.js` (pure, unit-tested). Built and measured on **17 real photos** of your TV.
 
-1. **Rectify** (OpenCV.js): blur → Canny + Otsu masks → largest convex 4-point contour covering 30-98% of the photo = the TV screen → pad 3% → `warpPerspective`. Both rectified and original are tried; the one yielding more rows wins.
-2. **Find rows**: CLAHE → Sobel-x → Otsu → horizontal close/dilate → contours; fragments sharing ≥ 50% vertical overlap merge (the name block and the points block of a row are far apart); keep rows wider than 35% with near-median height; max 12.
-3. **OCR each row** (Tesseract.js, PSM 7 single line) on three binarisations — white-glyph HSV mask (S < 70, V > 170), Otsu, inverted gray — keeping the most confident. Isolating rows took a synthetic perspective photo from 2/12 rows read (whole-screen OCR) to **12/12**.
-4. **Parse** each row against the layout `[place] [icon] [name] … [+gained] [points]`, with digit repair (`l→1`, `O→0`, `S→5` only on numeric-looking tokens), ordinal stripping, missing-place inference, gained⇄placement cross-checks, descending-totals checks, and a 50% majority rule to classify final vs race screens.
-5. **Icons**: the icon box comes from the stray glyph Tesseract reports over the icon (or 1.8× text height left of the name), inset 10%, resized to 48×48, compared to learned templates with **0.6 × `TM_CCOEFF_NORMED` + 0.4 × HSV histogram correlation**; confidence blends best score and margin over the runner-up. CPU rows also get their character from the name ("Mario").
-6. **Identity suggestion** (`identity.js`): score = 0.6 × name similarity (Mii name / display name, Levenshtein ≥ 60%) + 0.4 × icon confidence when the character is a member's favourite (divided by how many members share that favourite). Greedy one-to-one assignment ≥ 0.3; unmatched rows whose name is a character name become CPUs. Each kart shows the reason, and the uploader can override any mapping before confirming.
+1. **Find the TV** — largest bright/saturated region (HSV threshold → close/open → connected components), padded 2 %.
+2. **Straighten** — Canny + probabilistic Hough; the length-weighted median angle of long near-horizontal lines (the bar edges) is rotated out.
+3. **Pass 1, layout** — sparse OCR (PSM 11) of three binarisations of the whole screen: white-glyph mask (S < 85, V > 175), white top-hat on V + Otsu (bright text on any background), CLAHE grey. `planScreen()` then:
+   - matches text against a **closed vocabulary** (25 characters + the group's Mii names) with a fuzzy matcher, so "Manito" → Mario, "Koopa Tioopa" → Koopa Troopa;
+   - decides **final** (title / two columns of names) vs **standings**;
+   - fits the row grid: a pitch/phase search over name and place-label anchors, then a quadratic curve for perspective, then per-row re-centring;
+   - places a **name cell** and a **total cell** per row (standings: right-aligned column; final: shared right edge of each column, stopping before the 7th-12th labels).
+4. **Pass 2, cells** — each cell is cut from a 2× copy:
+   - names: 3 binarisations → single-line OCR, letters only → vocabulary vote;
+   - totals: 6 binarisations (adaptive threshold, blue-digit and white-digit masks, top-hat…) → `isolateDigits()` erases bar edges, then keeps the right-most group of tall glyphs (dropping "pts", "+gained", the wheel icon, specks) → single-line OCR, digits only.
+5. **Players** — median colour of thin strips above/below each name: standings CPU rows are dark/translucent; final-screen CPU rows sit on the plain blue background.
+6. **Decoding** — `pointsCandidates()` votes across binarisations (a lone "5" supports "45"); on final results and sorted standings `decodeDescending()` picks the best-scoring totals that never increase down the list (a misread is skipped rather than allowed to break the order). An after-race screen is recognised by "+gained" or by confidently out-of-order totals, and its rows are race placements.
+7. **Identity** (`identity.js`) — Mii name ≈ member's Mii name (strong), character == member's favourite (÷ members sharing it), + bonus for a player bar. Greedy one-to-one; unclaimed player rows become "choose who it was", the rest CPUs. The uploader can override every row.
 
-Fallbacks: if OpenCV.js can't load, a single sparse-text OCR pass over a contrast-stretched image is used and icon matching uses plain-JS NCC.
+**Measured on your 17 photos** (11 standings, 6 final; `npm test` locks these in):
 
-**Example output** (real Tesseract 5 run on `tests/fixtures/race_photo.jpg`, a synthetic, perspective-warped, glared photo):
+| | names | totals |
+|---|---|---|
+| **player rows** (what the app stores) | 59/68 · 87 % | 55/68 · 81 % |
+| all rows incl. CPUs | 181/204 · 89 % | 137/204 · 67 % |
 
-```json
-{ "kind": "race", "issues": [],
-  "rows": [
-    { "place": 1, "name": "Anya",    "gained": 15, "points": 15, "confidence": 87,
-      "iconBox": { "x0": 126, "y0": 8, "x1": 202, "y1": 84 },
-      "suggestion": { "profile_id": "u-an", "confidence": 0.6, "reasons": ["name \"Anya\" ≈ Anya (100%)"] } },
-    { "place": 2, "name": "Prateek", "gained": 12, "points": 12, "confidence": 95,
-      "suggestion": { "profile_id": "u-pm", "reasons": ["name \"Prateek\" ≈ PRATEEK (100%)"] } },
-    { "place": 3, "name": "Mario",   "gained": 10, "points": 10, "cpuCharacter": "Mario",
-      "suggestion": { "is_cpu": true, "reasons": ["name reads as the character \"Mario\" → CPU"] } },
-    { "place": 4, "name": "Dev",     "gained": 8,  "points": 8,
-      "suggestion": { "profile_id": "u-dv", "reasons": ["name \"Dev\" ≈ DevK (100%)"] } } ] }
+Screen type 17/17; player rows found 59/68 with 3 false positives. Best case: straight-on standings photos read 12/12 (e.g. IMG_5438, IMG_5508). Weakest: far-away final screens and totals on busy race-scene backgrounds. Every analysis is shown with the cells outlined on the photo and must be confirmed (and corrected) before saving, so a misread never reaches the stats silently.
+
+**Example output** (IMG_5505, standings sorted by total — a real run, unedited):
+
 ```
+ 1  Mario        46  player      7  King Boo     20
+ 2  Luigi        46  player      8  Peach        19
+ 3  Waluigi      45  player      9  Dry Bones    16
+ 4  Yoshi        29  player     10  —             8   ← name unread (Baby Peach)
+ 5  Toad         28             11  Bowser        7
+ 6  Baby Mario   23             12  Donkey Kong   3   ← misread (5)
+suggestions with the sample members: row 4 Yoshi → the Yoshi fan;
+rows 1-3 "player, choose who it was" (nobody's favourite); rows 5-12 → CPU
+```
+
+`tests/fixtures/wii/` holds the OCR text and boxes from those photos (no images); `tests/tools/` re-runs the whole evaluation on new photos with desktop Tesseract; `tests/browser/vision-check.html` runs the real in-browser pipeline on a generated screen or any photo you pick.
 
 ## 8. Analytics engine
 
@@ -255,6 +270,6 @@ All code is in this folder — no placeholders. The only values you supply are y
 4. **Frontend** — put the project URL and anon key (Project Settings → API) in `js/config.js`, commit, push. GitHub Pages publishes `https://prateekm.me/mariokart/` within a minute.
 5. **Add members** in the Admin tab. Everyone sets a Mii name + favourite character on the *Me* tab so photo suggestions work.
 
-**Tests**: `npm test` (Node 20+) runs 14 unit tests including the OCR parser on real Tesseract output; `supabase/schema.sql` was verified against PostgreSQL 16 (whitelist trigger, RLS, 4-race rule, ties, last-admin guard); `tests/browser/smoke.py` drives the whole UI at phone size with Playwright against an in-memory Supabase mock. `tests/fixtures/make_screen.py` + `rows_proto.py` regenerate the synthetic photos and the Python reference of the vision pipeline.
+**Tests**: `npm test` (Node 20+) runs 16 unit tests, including accuracy on the 17 real-photo fixtures; `supabase/schema.sql` was verified against PostgreSQL 16 (whitelist trigger, RLS, 4-race rule, ties, last-admin guard); `tests/browser/smoke.py` drives the whole UI at phone size with Playwright against an in-memory Supabase mock; open `/mariokart/tests/browser/vision-check.html` to run the photo reader in your own browser.
 
-**Limits worth knowing**: free Supabase projects pause after a week of no activity (one click to resume); OCR has been tuned on synthetic screens that mimic the layout — after your first real photos, check the analysis panel (rows are outlined on the image) and the icon matcher improves as confirmed GPs add templates.
+**Limits worth knowing**: free Supabase projects pause after a week of no activity (one click to resume). Photo reading takes ~20-40 s per photo on a phone (the first run also downloads ~10 MB of OCR/CV engines, cached afterwards). Take photos straight on and close enough that the list fills most of the frame — far, angled shots of the final screen are where totals get missed.

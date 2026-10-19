@@ -1,0 +1,120 @@
+{
+ "5505": {
+  "kind": "standings",
+  "humans": [
+   1,
+   2,
+   3,
+   4
+  ],
+  "rows": [
+   [
+    "Mario",
+    46
+   ],
+   [
+    "Luigi",
+    46
+   ],
+   [
+    "Waluigi",
+    45
+   ],
+   [
+    "Yoshi",
+    29
+   ],
+   [
+    "Toad",
+    28
+   ],
+   [
+    "Baby Mario",
+    23
+   ],
+   [
+    "King Boo",
+    20
+   ],
+   [
+    "Peach",
+    19
+   ],
+   [
+    "Dry Bones",
+    16
+   ],
+   [
+    "Baby Peach",
+    8
+   ],
+   [
+    "Bowser",
+    7
+   ],
+   [
+    "Donkey Kong",
+    5
+   ]
+  ]
+ },
+ "7316": {
+  "kind": "final",
+  "humans": [
+   1,
+   2,
+   4,
+   8
+  ],
+  "rows": [
+   [
+    "Mario",
+    45
+   ],
+   [
+    "Diddy Kong",
+    40
+   ],
+   [
+    "Baby Peach",
+    37
+   ],
+   [
+    "Yoshi",
+    36
+   ],
+   [
+    "Toad",
+    36
+   ],
+   [
+    "Rosalina",
+    27
+   ],
+   [
+    "Baby Mario",
+    19
+   ],
+   [
+    "Waluigi",
+    17
+   ],
+   [
+    "Dry Bowser",
+    10
+   ],
+   [
+    "Birdo",
+    9
+   ],
+   [
+    "Bowser",
+    8
+   ],
+   [
+    "Toadette",
+    8
+   ]
+  ]
+ }
+}

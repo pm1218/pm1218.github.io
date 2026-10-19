@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Vision check</title>
+  <style>
+    :root { --bg: #f4f2ee; --text: #1b1d22; --muted: #667085; --ok: #138a4b; --bad: #c0262d; }
+    @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #111318; --text: #eceef3; --muted: #98a0b0; --ok: #3ccf82; --bad: #ff6b70; } }
+    :root[data-theme="dark"] { --bg: #111318; --text: #eceef3; --muted: #98a0b0; --ok: #3ccf82; --bad: #ff6b70; }
+    body { margin: 0; padding: 16px; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, sans-serif; }
+    canvas, img { max-width: 100%; height: auto; display: block; margin: 8px 0; border-radius: 8px; }
+    pre { white-space: pre-wrap; font-size: 12px; }
+    .ok { color: var(--ok); font-weight: 700; } .bad { color: var(--bad); font-weight: 700; }
+    label { display: block; margin: 12px 0; }
+  </style>
+</head>
+<body>
+  <h1>Kart Club · vision check</h1>
+  <p>Runs the in-browser OpenCV.js + Tesseract.js pipeline on a generated Mario Kart Wii-style standings screen (and optionally your own photo). No account or backend needed.</p>
+  <label>Or analyse a photo: <input type="file" id="file" accept="image/*"></label>
+  <p id="status">Starting…</p>
+  <div id="out"></div>
+  <script type="module">
+    import { analyzePhoto } from '../../js/vision.js';
+
+    const ROWS = [['Mario', 46, true], ['Luigi', 46, true], ['Waluigi', 45, true], ['Yoshi', 29, true], ['Toad', 28], ['Baby Mario', 23], ['King Boo', 20], ['Peach', 19], ['Dry Bones', 16], ['Baby Peach', 8], ['Bowser', 7], ['Donkey Kong', 5]];
+    const BARS = ['#f08a24', '#c046d8', '#2aa8e0', '#58c43a'];
+    const ord = (n) => n + (['th', 'st', 'nd', 'rd'][((n % 100) - 20) % 10] || ['th', 'st', 'nd', 'rd'][n % 100] || 'th');
+
+    function syntheticScreen() {
+      const W = 1600; const H = 1200; const c = document.createElement('canvas'); c.width = W; c.height = H;
+      const g = c.getContext('2d');
+      g.fillStyle = '#20232c'; g.fillRect(0, 0, W, H);               // room
+      g.fillStyle = '#3a4a7a'; g.fillRect(120, 90, 1360, 1020);     // TV picture
+      const top = 140; const pitch = 78;
+      ROWS.forEach(([name, pts, human], i) => {
+        const y = top + i * pitch;
+        g.fillStyle = human ? BARS[i % 4] : 'rgba(30,30,40,0.85)';
+        g.fillRect(140, y, 1320, pitch - 8);
+        g.strokeStyle = '#d9d9d9'; g.lineWidth = 2; g.strokeRect(140, y, 1320, pitch - 8);
+        g.font = 'bold 48px Arial, sans-serif'; g.textBaseline = 'middle'; g.lineWidth = 7; g.strokeStyle = '#111';
+        const text = (t, x, fill, align = 'left') => { g.textAlign = align; g.strokeText(t, x, y + pitch / 2 - 4); g.fillStyle = fill; g.fillText(t, x, y + pitch / 2 - 4); };
+        text(ord(i + 1), 170, '#fff');
+        g.fillStyle = '#c33'; g.beginPath(); g.arc(360, y + pitch / 2 - 4, 26, 0, 7); g.fill();
+        text(name, 760, '#fff', 'center');
+        text(String(pts), 1330, human ? '#fff' : '#5aa0ff', 'right');
+        g.font = 'bold 28px Arial, sans-serif'; text('pts', 1340, human ? '#fff' : '#5aa0ff');
+      });
+      return c;
+    }
+
+    const status = document.getElementById('status');
+    const out = document.getElementById('out');
+
+    async function run(blob, truth) {
+      const t0 = performance.now();
+      out.innerHTML = '';
+      try {
+        const r = await analyzePhoto(blob, { onProgress: (p) => { status.textContent = `${p.status} (${Math.round(p.progress * 100)}%)`; } });
+        const secs = ((performance.now() - t0) / 1000).toFixed(1);
+        let summary = `${r.kind}/${r.phase} in ${secs}s`;
+        if (truth) {
+          const names = r.rows.filter((x, i) => x.name === truth[i]?.[0]).length;
+          const pts = r.rows.filter((x, i) => x.points === truth[i]?.[1]).length;
+          const players = r.rows.filter((x, i) => Boolean(x.human) === Boolean(truth[i]?.[2])).length;
+          summary += ` — names ${names}/12, totals ${pts}/12, player flags ${players}/12`;
+          document.body.dataset.result = JSON.stringify({ kind: r.kind, names, pts, players });
+        }
+        status.innerHTML = `<span class="ok">OK</span> ${summary}`;
+        out.append(r.canvas);
+        const pre = document.createElement('pre');
+        pre.textContent = r.rows.map((x) => `${String(x.place).padStart(2)}  ${(x.name ?? '—').padEnd(12)} ${String(x.points ?? '—').padStart(3)}  ${x.human ? 'player' : ''}`).join('\n') + (r.issues.length ? `\n\nIssues:\n- ${r.issues.join('\n- ')}` : '');
+        out.append(pre);
+      } catch (e) {
+        console.error(e);
+        status.innerHTML = `<span class="bad">FAILED</span> ${e.message}`;
+        document.body.dataset.result = JSON.stringify({ error: e.message, stack: String(e.stack || '') });
+      }
+    }
+
+    document.getElementById('file').addEventListener('change', (e) => { if (e.target.files[0]) run(e.target.files[0], null); });
+    const c = syntheticScreen();
+    c.toBlob((b) => run(b, ROWS), 'image/png');
+  </script>
+</body>
+</html>

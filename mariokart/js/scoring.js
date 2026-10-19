@@ -137,17 +137,26 @@ export function toPayload(draft) {
 }
 
 // ---------------------------------------------------------------------
-// Photo → draft normalisation
+// Photo → draft normalisation (Mario Kart Wii screens, see wii-layout.js)
 // ---------------------------------------------------------------------
+//
+// screens: results of vision.analyzePhoto(), in upload order.
+//   kind 'final'                       → GP totals
+//   kind 'standings', phase 'totals'   → standings sorted by total; used as GP
+//                                        totals when it is the only photo
+//   kind 'standings', phase 'race'     → after a race: rows in that race's
+//                                        finishing order, "+gained" visible
+// Race-by-race upload needs exactly four 'race' screens (the 4-race rule).
 
 function participantsFromRows(rows, identities, profilesById) {
   return rows.map((row, i) => {
     const id = identities?.[i] || {};
     const profile = id.profile_id ? profilesById.get(id.profile_id) : null;
+    const read = row.name || `Kart ${row.place}`;
     return makeParticipant({
       profile_id: id.profile_id || null,
-      label: profile ? profile.display_name : row.name || `Kart ${row.place}`,
-      character: row.character || row.cpuCharacter || null,
+      label: profile ? profile.display_name : id.is_cpu ? (row.character || read) : read,
+      character: row.character || null,
       is_cpu: Boolean(id.is_cpu),
       ocr_name: row.name,
       suggestion: id,
@@ -155,8 +164,7 @@ function participantsFromRows(rows, identities, profilesById) {
   });
 }
 
-// Race placement for a row on a post-race screen. "+gained" pins it exactly,
-// which also covers photos taken after the game re-sorted rows by total.
+// Race placement for a row on a post-race screen. "+gained" pins it exactly.
 export function racePlacementOf(row) {
   if (Number.isInteger(row.gained)) {
     const idx = POINTS.indexOf(row.gained);
@@ -165,38 +173,42 @@ export function racePlacementOf(row) {
   return row.place;
 }
 
-/**
- * screens: parsed screens in order. Either exactly one 'final' screen, or
- * race screens. Fewer than four race screens is rejected here exactly as
- * the server would, so the uploader is told to use the final total instead.
- */
+const isTotals = (s) => s.kind === 'final' || (s.kind === 'standings' && s.phase === 'totals');
+const isRace = (s) => s.kind === 'standings' && s.phase === 'race';
+
 export function draftFromScreens({ screens, identities, profiles, cup }) {
   const profilesById = new Map(profiles.map((p) => [p.id, p]));
   const draft = emptyDraft(cup);
-  const finals = screens.filter((s) => s.kind === 'final');
-  const races = screens.filter((s) => s.kind === 'race');
   const issues = [];
-
-  if (finals.length && races.length) {
-    throw new Error('Upload either the final standings screen or the four race screens, not both.');
+  if (!screens.length) throw new Error('Add a photo first.');
+  if (screens.some((s) => s.kind === 'unknown')) {
+    throw new Error("One photo doesn't look like a Mario Kart Wii results screen. Retake it straight on, filling the frame with the list.");
   }
 
-  if (finals.length) {
-    if (finals.length > 1) throw new Error('Upload a single final standings screen.');
-    const base = finals[0];
+  const races = screens.filter(isRace);
+  const totals = screens.filter(isTotals);
+
+  if (races.length && races.length !== screens.length) {
+    throw new Error('Mixing screens: upload either the final results, or the four after-race screens (the ones showing +points).');
+  }
+
+  if (!races.length) {
+    if (totals.length !== 1) throw new Error('Upload a single final results photo.');
+    const base = totals[0];
     draft.mode = 'total';
     draft.source = 'photo_total';
     draft.participants = participantsFromRows(base.rows, identities, profilesById);
     base.rows.forEach((row, i) => {
       draft.participants[i].final_total = Number.isInteger(row.points) && row.points <= MAX_GP_TOTAL ? row.points : null;
+      if (Number.isInteger(row.points) && row.points > MAX_GP_TOTAL) issues.push(`${row.name || `Row ${row.place}`} shows ${row.points} points — more than one Grand Prix's worth. Enter the GP total.`);
     });
     return { draft, issues };
   }
 
   if (races.length !== RACES_PER_GP) {
     const err = new Error(
-      `Race-by-race upload needs all ${RACES_PER_GP} race screens; got ${races.length}. ` +
-        'Upload the final standings screen (or type the final totals) instead.',
+      `Race-by-race upload needs all ${RACES_PER_GP} after-race screens; got ${races.length}. ` +
+        'Upload the final results photo (or type the final totals) instead.',
     );
     err.code = 'INCOMPLETE_RACES';
     throw err;
@@ -211,15 +223,15 @@ export function draftFromScreens({ screens, identities, profiles, cup }) {
     const results = {};
     const used = new Set();
     for (const row of screen.rows) {
-      // Match this row to a base participant by OCR'd name.
+      // Same kart across photos: the character/Mii name is shown on every screen.
       let best = null;
       draft.participants.forEach((p) => {
         if (used.has(p.key)) return;
-        const s = similarity(row.name, p.ocr_name || p.label);
-        if (!best || s > best.s) best = { p, s };
+        const sim = row.name && p.ocr_name ? similarity(row.name, p.ocr_name) : 0;
+        if (!best || sim > best.s) best = { p, s: sim };
       });
-      if (!best || best.s < 0.6) {
-        issues.push(`Race ${ri + 1}: could not match "${row.name}" to a kart from race 1.`);
+      if (!best || best.s < 0.75) {
+        issues.push(`Race ${ri + 1}: couldn't match "${row.name ?? `row ${row.place}`}" to a kart from race 1 — set its place by hand.`);
         continue;
       }
       used.add(best.p.key);
@@ -227,7 +239,7 @@ export function draftFromScreens({ screens, identities, profiles, cup }) {
     }
     draft.races[ri].results = results;
     if (!isRaceComplete(draft.races[ri], draft.participants)) {
-      issues.push(`Race ${ri + 1} is missing placements — fix them before confirming.`);
+      issues.push(`Race ${ri + 1} is missing placements — fill them in before confirming.`);
     }
   });
   return { draft, issues };

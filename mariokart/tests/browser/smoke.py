@@ -16,6 +16,11 @@ SHOTS.mkdir(exist_ok=True)
 MOCK = (HERE / "mock-supabase.js").read_text()
 CONFIG = "export const CONFIG = { SUPABASE_URL: 'https://mock.supabase.co', SUPABASE_ANON_KEY: 'mock', APP_NAME: 'Kart Club' };"
 errors = []
+# Any small image will do: this step only checks the 4-photo gating in the UI.
+SAMPLE = SHOTS / "sample.png"
+SAMPLE.write_bytes(bytes.fromhex(
+    "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
+    "1f15c4890000000d49444154789c6360f8cf000002020101c8bd7c1d0000000049454e44ae426082"))
 
 
 def shot(page, name):
@@ -107,10 +112,10 @@ def run():
         shot(page, "06-event")
         page.get_by_role("button", name="+ Add Grand Prix").click()
         page.get_by_role("tab", name="📷 Photo").click()
-        page.get_by_role("radio", name="4 race screens").click()
+        page.get_by_role("radio", name="4 after-race screens").click()
         expect(page.get_by_text("0 of 4 race photos added")).to_be_visible()
         expect(page.get_by_role("button", name="Analyze photos")).to_be_disabled()
-        page.locator("#ph-0").set_input_files(str(HERE.parent / "fixtures" / "race_photo.jpg"))
+        page.locator("#ph-0").set_input_files(str(SAMPLE))
         expect(page.get_by_text("1 of 4 race photos added")).to_be_visible()
         expect(page.get_by_role("button", name="Analyze photos")).to_be_disabled()
         shot(page, "07-photo-needs-four")

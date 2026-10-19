@@ -380,14 +380,14 @@ function viewGpEntry(gp) {
     const filled = slots.filter((i) => photo.files[i]).length;
     const needed = slots.length;
     const kindSel = h('div', { class: 'segmented small', role: 'radiogroup', 'aria-label': 'Which screen' },
-      [['final', 'Final standings (1 photo)'], ['race', '4 race screens']].map(([k, label]) =>
+      [['final', 'Final results (1 photo)'], ['race', '4 after-race screens']].map(([k, label]) =>
         h('button', { type: 'button', role: 'radio', 'aria-checked': String(photo.kind === k), class: photo.kind === k ? 'on' : '', onclick: () => { if (photo.kind !== k) { photo.kind = k; photo.files = [null, null, null, null]; photo.analysis = null; } render(); } }, label)));
 
     const slotEls = slots.map((i) => {
       const input = h('input', { type: 'file', accept: 'image/*', id: `ph-${i}`, class: 'visually-hidden' });
       input.addEventListener('change', () => { photo.files[i] = input.files[0] || null; photo.analysis = null; render(); });
       const f = photo.files[i];
-      const label = photo.kind === 'final' ? 'Final standings screen' : `Race ${i + 1} · ${draft.races[i].track}`;
+      const label = photo.kind === 'final' ? '"You got … place!" results screen' : `After race ${i + 1} (${draft.races[i].track}) — the screen with +points`;
       return h('label', { class: `photo-slot ${f ? 'has' : ''}`, for: `ph-${i}` },
         f ? h('img', { src: URL.createObjectURL(f), alt: label }) : h('span', { class: 'slot-plus', 'aria-hidden': 'true' }, '+'),
         h('span', { class: 'slot-label' }, f ? `✓ ${label}` : `Take or choose: ${label}`), input);
@@ -400,16 +400,17 @@ function viewGpEntry(gp) {
       progress.hidden = false;
       const setP = (frac, label) => { progress.querySelector('.bar').style.width = `${Math.round(frac * 100)}%`; progress.querySelector('.progress-label').textContent = label; };
       const templates = await api.loadTemplates().catch(() => []);
+      const miiNames = state.profiles.map((p) => p.mii_name).filter(Boolean);
       const screens = [];
       photo.colorCanvases = [];
       for (const [n, i] of slots.entries()) {
         const res = await vision.analyzePhoto(photo.files[i], {
-          expectedKind: photo.kind,
+          miiNames,
           templates,
           onProgress: (p) => setP((n + p.progress) / slots.length, `${slots.length > 1 ? `Photo ${n + 1}/${slots.length}: ` : ''}${p.status}`),
         });
         screens.push(res);
-        photo.colorCanvases.push(res.colorCanvas);
+        photo.colorCanvases.push(res.canvas);
       }
       const base = screens[0];
       const identities = suggestIdentities(base.rows, state.profiles);
@@ -418,7 +419,7 @@ function viewGpEntry(gp) {
       d.participants.forEach((p, idx) => { if (base.rows[idx]?.iconCanvas) icons.set(p.key, base.rows[idx].iconCanvas); });
       d.ocr_raw = {
         engine: base.engine,
-        screens: screens.map((s) => ({ kind: s.kind, issues: s.issues, rows: s.rows.map(({ place, name, points, gained, character, characterConfidence, characterSource, confidence }) => ({ place, name, points, gained, character, characterConfidence, characterSource, confidence })) })),
+        screens: screens.map((s) => ({ kind: s.kind, phase: s.phase, issues: s.issues, rows: s.rows.map(({ place, name, points, gained, human, character, characterConfidence, characterSource, confidence }) => ({ place, name, points, gained, human, character, characterConfidence, characterSource, confidence })) })),
         suggestions: identities,
       };
       photo.analysis = { screens, issues: [...screens.flatMap((s, i) => s.issues.map((x) => (screens.length > 1 ? `Photo ${i + 1}: ${x}` : x))), ...issues] };
@@ -431,7 +432,7 @@ function viewGpEntry(gp) {
 
     return h('section', {},
       h('h2', {}, 'Upload a photo'),
-      h('p', { class: 'muted small' }, 'Photograph the TV straight on, filling the frame with the score list. Everything is read on your phone.'),
+      h('p', { class: 'muted small' }, 'Mario Kart Wii only. Photograph the TV as straight on as you can, with the whole list in the frame. Everything is read on your phone — it takes 20-40 seconds per photo, and you check every row before confirming.'),
       kindSel, h('div', { class: `photo-grid n${slots.length}` }, slotEls),
       filled < needed && photo.kind === 'race'
         ? h('div', { class: 'banner warn' }, `${filled} of 4 race photos added. Individual race uploads need all 4 races. `,
@@ -446,18 +447,18 @@ function viewGpEntry(gp) {
     const cv = cloneCanvas(photo.colorCanvases[0]);
     const ctx = cv.getContext('2d');
     ctx.lineWidth = Math.max(2, cv.width / 400);
+    const box = (b, color) => { if (b) { ctx.strokeStyle = color; ctx.strokeRect(b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0); } };
     for (const r of s.rows) {
-      ctx.strokeStyle = '#22c55e';
-      if (r.rowBox) ctx.strokeRect(r.rowBox.x0, r.rowBox.y0, r.rowBox.x1 - r.rowBox.x0, r.rowBox.y1 - r.rowBox.y0);
-      ctx.strokeStyle = '#f59e0b';
-      if (r.iconBox) ctx.strokeRect(r.iconBox.x0, r.iconBox.y0, r.iconBox.x1 - r.iconBox.x0, r.iconBox.y1 - r.iconBox.y0);
+      box(r.nameBox, r.human ? '#22c55e' : '#94a3b8');
+      box(r.pointsBox, '#f59e0b');
     }
     cv.classList.add('analysis-canvas');
     return h('details', { class: 'card', open: photo.analysis.issues.length > 0 },
-      h('summary', {}, `Photo analysis · ${s.rows.length} rows · ${s.engine}`),
+      h('summary', {}, `Photo analysis · ${s.kind === 'final' ? 'final results' : s.phase === 'race' ? 'after-race screen' : 'standings'} · ${s.rows.filter((r) => r.human).length} players spotted`),
       cv,
       photo.analysis.issues.length ? h('ul', { class: 'issues' }, photo.analysis.issues.map((x) => h('li', {}, x))) : h('p', { class: 'ok-text' }, 'No problems spotted.'),
-      table(['#', 'Read name', 'Character', s.kind === 'race' ? '+Pts' : 'Pts'], s.rows.map((r) => [r.place, r.name || '—', r.character ? `${r.character} (${Math.round(r.characterConfidence * 100)}%, ${r.characterSource})` : '—', s.kind === 'race' ? (r.gained ?? '—') : (r.points ?? '—')]), { stickyFirst: false }));
+      h('p', { class: 'muted small' }, 'Green = player bar, grey = CPU, orange = where the total was read.'),
+      table(['#', 'Read', 'Player?', 'Pts'], s.rows.map((r) => [r.place, r.name || '—', r.human ? 'yes' : '', r.points ?? '—']), { stickyFirst: false }));
   }
 
   // ---- review + confirm
