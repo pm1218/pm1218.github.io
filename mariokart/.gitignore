@@ -1,2 +1,4 @@
 tests/browser/screens/
 node_modules/
+__pycache__/
+tests/tools/work/
