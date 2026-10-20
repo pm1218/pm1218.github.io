@@ -74,7 +74,7 @@ export async function setAdmin(email, isAdmin) {
 
 // ---------------------------------------------------------------- events / GPs
 export async function listEvents() {
-  return check(await sb.from('events').select('*, grand_prix(id,status)').order('starts_on', { ascending: false, nullsFirst: false }).order('created_at', { ascending: false }));
+  return check(await sb.from('events').select('*, grand_prix(id,status,created_at,confirmed_at)').order('starts_on', { ascending: false, nullsFirst: false }).order('created_at', { ascending: false }));
 }
 export async function createEvent(fields) {
   return check(await sb.from('events').insert(fields).select().single());
@@ -127,15 +127,10 @@ export async function reopenGp(gpId) {
   return check(await sb.rpc('reopen_grand_prix', { p_gp_id: gpId }));
 }
 
-export async function sendSummary(gpId) {
-  const { data, error } = await sb.functions.invoke('send-gp-summary', { body: { gp_id: gpId } });
-  if (error) {
-    let detail = error.message;
-    try { detail = (await error.context.json()).error || detail; } catch { /* keep message */ }
-    throw new Error(`Summary email failed: ${detail}`);
-  }
-  return data;
-}
+// Events: live until finalized (by hand or after 12 h without uploads).
+export const finalizeStale = async () => check(await sb.rpc('finalize_stale_events'));
+export const finalizeEvent = async (id) => check(await sb.rpc('finalize_event', { p_event_id: id }));
+export const reopenEvent = async (id) => check(await sb.rpc('reopen_event', { p_event_id: id }));
 
 // ---------------------------------------------------------------- storage
 export async function uploadPhoto(gpId, blob, label) {

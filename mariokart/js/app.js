@@ -15,6 +15,7 @@ import {
 import { suggestIdentities } from './identity.js';
 import {
   powerRankings, eloRatings, consistencyMetrics, trackReport, headToHead, headToHeadMatrix, insights,
+  eventSummary, eventState, AUTO_FINALIZE_HOURS,
 } from './analytics.js';
 import { h, clear, selectEl, toast, charBadge, fmtDate, fmtDateTime, spinner, emptyState, busy, table } from './ui.js';
 
@@ -116,10 +117,11 @@ async function viewEvents() {
   const list = events.length
     ? h('div', { class: 'list' }, events.map((e) => {
         const confirmed = e.grand_prix.filter((g) => g.status === 'confirmed').length;
+        const live = eventState(e).state === 'live';
         return h('a', { class: 'list-item', href: `#/events/${e.id}` },
           h('div', {}, h('div', { class: 'li-title' }, e.name),
-            h('div', { class: 'li-sub' }, [e.kind, e.location, fmtDate(e.starts_on)].filter(Boolean).join(' · '))),
-          h('span', { class: 'pill' }, `${confirmed}/${e.grand_prix.length} VS`));
+            h('div', { class: 'li-sub' }, [e.kind, e.location, fmtDate(e.starts_on), `${confirmed} session${confirmed === 1 ? '' : 's'}`].filter(Boolean).join(' · '))),
+          live ? h('span', { class: 'pill live' }, 'LIVE') : h('span', { class: 'pill' }, 'Final'));
       }))
     : emptyState('No events yet', 'Create one for your next session, weekend or trip.');
   page('Events', form, list);
@@ -152,6 +154,9 @@ async function viewEvent(id) {
   page('Event', spinner());
   const [ev, gps] = await Promise.all([api.getEvent(id), api.listGps(id)]);
   const confirmed = gps.filter((g) => g.status === 'confirmed');
+  const st = eventState({ ...ev, grand_prix: gps });
+  const isLive = st.state === 'live';
+  const canManage = ev.created_by === state.me.profile.id || state.me.isAdmin;
 
   const cls = selectEl(ENGINE_CLASSES, '150cc', { id: 'gp-class' });
   const btn = h('button', { class: 'btn primary block', type: 'submit' }, '+ New VS session (4 races)');
@@ -178,9 +183,34 @@ async function viewEvent(id) {
     : emptyState('No VS sessions yet', 'Start one, race 4 times, then upload the scores.');
 
   const standings = confirmed.length
-    ? h('section', {}, h('h2', {}, 'Event power rankings'), powerTable(powerRankings(confirmed, state.profiles)),
+    ? h('section', {}, h('h2', {}, isLive ? 'Live standings' : 'Final standings'), summaryTable(eventSummary(confirmed, state.profiles)),
         h('a', { class: 'btn block', href: `#/stats/${id}` }, 'Full event analytics →'))
     : null;
+
+  // Live until finalized by hand, or automatically after 12 h without uploads.
+  const status = h('div', { class: `banner ${isLive ? 'live' : 'ok'}` });
+  if (isLive) {
+    status.append(h('strong', {}, '● Live event. '),
+      st.autoFinalizeAt ? `Ends automatically ${fmtDateTime(st.autoFinalizeAt)} unless more scores are uploaded (${AUTO_FINALIZE_HOURS} h after the last upload).` : '');
+    if (canManage) {
+      const fin = h('button', { type: 'button', class: 'btn small' }, 'Finalize now');
+      fin.addEventListener('click', busy(fin, async () => {
+        if (!confirm(`Finalize "${ev.name}"? No more sessions can be added, and the final standings are emailed to everyone.`)) return;
+        await api.finalizeEvent(id); toast('Event finalized'); viewEvent(id);
+      }));
+      status.append(' ', fin);
+    }
+  } else {
+    status.append(h('strong', {}, '🏁 Event over. '), `Finalized ${fmtDateTime(st.finalizedAt)}${ev.recap_sent_at ? ' · final standings emailed' : ''}.`);
+    if (state.me.isAdmin) {
+      const re = h('button', { type: 'button', class: 'btn small' }, 'Reopen (admin)');
+      re.addEventListener('click', busy(re, async () => {
+        if (!confirm('Reopen this event so more sessions can be added?')) return;
+        await api.reopenEvent(id); toast('Event reopened'); viewEvent(id);
+      }));
+      status.append(' ', re);
+    }
+  }
 
   const canDelete = ev.created_by === state.me.profile.id || state.me.isAdmin;
   const del = canDelete ? h('button', { class: 'btn danger-link' }, 'Delete event') : null;
@@ -193,7 +223,7 @@ async function viewEvent(id) {
 
   page(ev.name,
     h('p', { class: 'muted' }, [ev.kind, ev.location, fmtDate(ev.starts_on)].filter(Boolean).join(' · ')),
-    standings, h('h2', {}, 'VS sessions'), gpList, form, del);
+    status, standings, h('h2', {}, 'VS sessions'), gpList, isLive ? form : null, del);
 }
 
 // ======================================================================= GP
@@ -226,13 +256,9 @@ async function viewGp(id) {
   if (photoPaths.length) api.signedUrls(photoPaths).then((urls) => photos.append(...urls.map((u) => h('a', { href: u, target: '_blank', rel: 'noopener' }, h('img', { src: u, alt: 'Score screen photo', loading: 'lazy' })))));
 
   const actions = h('div', { class: 'stack' });
-  if (!gp.summary_sent_at) {
-    const b = h('button', { class: 'btn primary block' }, 'Email the summary to everyone');
-    b.addEventListener('click', busy(b, async () => { await api.sendSummary(gp.id); toast('Summary emailed'); viewGp(id); }));
-    actions.append(h('p', { class: 'warn-text' }, 'The summary email has not gone out yet.'), b);
-  } else {
-    actions.append(h('p', { class: 'muted small' }, `Confirmed ${fmtDateTime(gp.confirmed_at)} by ${profileName(gp.confirmed_by)} · summary emailed ${fmtDateTime(gp.summary_sent_at)}`));
-  }
+  actions.append(h('p', { class: 'muted small' },
+    `Confirmed ${fmtDateTime(gp.confirmed_at)} by ${profileName(gp.confirmed_by)} · `,
+    gp.summary_sent_at ? `summary emailed ${fmtDateTime(gp.summary_sent_at)}` : 'summary email queued (goes out within about 10 minutes)'));
   if (state.me.isAdmin) {
     const b = h('button', { class: 'btn danger-link' }, 'Reopen for correction (admin)');
     b.addEventListener('click', busy(b, async () => {
@@ -513,13 +539,7 @@ function viewGpEntry(gp) {
     store.del(key);
     const teach = draft.participants.filter((p) => p.character && icons.get(p.key)).map((p) => ({ character: p.character, canvas: icons.get(p.key) }));
     if (teach.length) api.saveTemplates(teach, state.me.profile.id).catch((e) => console.warn('template save failed', e));
-    confirmBtn.textContent = 'Emailing…';
-    try {
-      await api.sendSummary(gp.id);
-      toast('Confirmed and emailed 🎉');
-    } catch (e) {
-      toast(`Confirmed. ${e.message} — you can resend from the session page.`, 'error');
-    }
+    toast('Confirmed 🎉 The summary email goes out within about 10 minutes.');
     go(`#/gp/${gp.id}`);
   }));
 
@@ -570,6 +590,25 @@ function cloneCanvas(src) {
 }
 
 // ==================================================================== stats
+function summaryTable(sum) {
+  return h('div', {},
+    table(['Player', 'Played', 'Wins', 'Pts', 'Avg', 'Avg place'],
+      sum.rows.map((r) => [`${r.rank}. ${r.name}`, r.sessions, h('strong', {}, r.wins), r.points, r.avgPts, r.avgPlace])),
+    sum.last ? h('p', { class: 'muted small' }, `Latest: VS ${sum.last.seq}${sum.last.winner ? ` won by ${sum.last.winner} (${sum.last.points})` : ''} · ${fmtDateTime(sum.last.confirmed_at)}`) : null);
+}
+
+function liveCard(ev, gps) {
+  const st = eventState(ev);
+  const sum = eventSummary(gps, state.profiles);
+  return h('section', { class: 'card live-card' },
+    h('div', { class: 'row-between' },
+      h('a', { href: `#/events/${ev.id}`, class: 'live-title' }, h('span', { class: 'pill live' }, 'LIVE'), ' ', ev.name),
+      h('a', { href: `#/stats/${ev.id}`, class: 'small' }, 'Event stats →')),
+    h('p', { class: 'muted small' }, `${sum.sessions} session${sum.sessions === 1 ? '' : 's'} so far`,
+      st.autoFinalizeAt ? ` · ends ${fmtDateTime(st.autoFinalizeAt)} unless more scores are uploaded` : ''),
+    sum.rows.length ? summaryTable(sum) : h('p', { class: 'muted' }, 'Waiting for the first scores.'));
+}
+
 function powerTable(rows) {
   return table(['Player', 'Power', 'Sessions', 'Avg pts', 'Avg place', 'Wins', 'Podium', 'Form'],
     rows.map((r) => [`${r.rank}. ${r.name}`, h('strong', {}, r.power), r.gps, r.avgPts, r.avgPlace, `${r.winRate}%`, `${r.podiumRate}%`, r.form]));
@@ -581,7 +620,11 @@ async function viewStats(eventId) {
   const scope = selectEl([{ value: '', label: 'All time (lifetime)' }, ...events.map((e) => ({ value: e.id, label: e.name }))], eventId || '', { 'aria-label': 'Scope' });
   scope.addEventListener('change', () => go(scope.value ? `#/stats/${scope.value}` : '#/stats'));
   const header = h('div', { class: 'card tight' }, h('label', {}, 'Showing'), scope);
-  if (!gps.length) return page('Stats', header, emptyState('No confirmed sessions yet', 'Stats appear once scores are confirmed.'));
+  // Live events stay pinned at the top until they are finalized.
+  const liveEvents = events.filter((e) => eventState(e).state === 'live');
+  const liveGps = await Promise.all(liveEvents.map((e) => (e.id === eventId ? gps : api.confirmedGps(e.id))));
+  const live = liveEvents.map((e, i) => liveCard(e, liveGps[i]));
+  if (!gps.length) return page('Stats', ...live, header, emptyState('No confirmed sessions yet', 'Stats appear once scores are confirmed.'));
 
   const P = state.profiles;
   const power = powerRankings(gps, P);
@@ -637,7 +680,7 @@ async function viewStats(eventId) {
 
   const section = (title, note, ...content) => h('section', { class: 'card' }, h('h2', {}, title), note ? h('p', { class: 'muted small' }, note) : null, ...content);
 
-  page('Stats', header,
+  page('Stats', ...live, header,
     h('p', { class: 'muted small' }, `${gps.length} confirmed VS session${gps.length === 1 ? '' : 's'} · ${raceGps} with race-by-race detail`),
     section('Power rankings', 'Blend of points share (45%), finishing place vs. field (30%), win rate (15%) and recent form (10%), shrunk toward the group average for players with few sessions.', powerTable(power)),
     section('Skill rating (Elo)', 'Every session counts as head-to-head duels between players by final total. Starts at 1500.',
@@ -770,6 +813,8 @@ async function boot() {
   }
   state.me = me;
   state.profiles = await api.listProfiles();
+  // Close out events idle for 12 h (the mailer does this too, on its schedule).
+  await api.finalizeStale().catch((e) => console.warn('auto-finalize', e));
   if (location.hash.startsWith('#/login') || !location.hash) location.replace('#/events');
   route();
 }

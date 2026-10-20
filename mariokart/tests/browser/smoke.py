@@ -93,7 +93,7 @@ def run():
         expect(rows.nth(1)).to_contain_text("🥇")
         expect(rows.nth(1)).to_contain_text("52")
         expect(rows.nth(2)).to_contain_text("🥉")
-        assert page.evaluate("window.__mails.length") == 1, "summary email not sent"
+        expect(page.get_by_text("summary email queued")).to_be_visible()
         shot(page, "05-gp-confirmed")
 
         # --- GP 2: final totals only
@@ -113,7 +113,7 @@ def run():
 
         # --- photo tab: race mode needs all four photos
         page.get_by_role("link", name=re.compile("Lake house weekend")).click()
-        expect(page.get_by_role("heading", name="Event power rankings")).to_be_visible()
+        expect(page.get_by_role("heading", name="Live standings")).to_be_visible()
         shot(page, "06-event")
         page.get_by_role("button", name="+ New VS session (4 races)").click()
         page.get_by_role("tab", name="📷 Photo").click()
@@ -132,9 +132,28 @@ def run():
         expect(page.get_by_role("heading", name="Power rankings")).to_be_visible()
         expect(page.get_by_role("heading", name="Head to head")).to_be_visible()
         expect(page.get_by_role("heading", name="Tracks")).to_be_visible()
+        # the live event is pinned at the top of Stats with its standings
+        live = page.locator(".live-card")
+        expect(live).to_contain_text("Lake house weekend")
+        expect(live).to_contain_text("2 sessions so far")
+        expect(live.locator("tbody tr").first).to_contain_text("Anya")
         expect(page.locator("table").filter(has_text="Rainbow Road")).to_have_count(2)  # overall + my tracks
         expect(page.locator(".h2h-score strong")).to_have_text(re.compile(r"\d+ – \d+"))
         shot(page, "08-stats")
+
+        # --- finalize the event: no more sessions, live card goes away
+        page.get_by_role("link", name="Events").click()
+        expect(page.locator(".pill.live")).to_have_count(1)
+        page.get_by_role("link", name=re.compile("Lake house weekend")).click()
+        expect(page.get_by_text("Live event.")).to_be_visible()
+        page.get_by_role("button", name="Finalize now").click()
+        expect(page.get_by_text("Event over.")).to_be_visible()
+        expect(page.get_by_role("heading", name="Final standings")).to_be_visible()
+        expect(page.get_by_role("button", name="+ New VS session (4 races)")).to_have_count(0)
+        shot(page, "09a-event-final")
+        page.get_by_role("link", name="Stats").click()
+        expect(page.get_by_role("heading", name="Power rankings")).to_be_visible()
+        expect(page.locator(".live-card")).to_have_count(0)
 
         # --- profile + admin
         page.get_by_role("link", name="Me").click()

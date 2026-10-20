@@ -1,0 +1,40 @@
+# Kart Club mailer: session summaries + event recaps over your own SMTP
+# (Proton Mail on port 587 works here; Supabase Edge Functions block 587).
+# Setup: repo Settings → Secrets and variables → Actions → add the secrets
+# listed under env below. See mariokart/README.md → "Emails".
+name: Kart Club mailer
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'   # GitHub may delay scheduled runs by a few minutes
+  workflow_dispatch: {}       # "Run workflow" button for an immediate send
+
+concurrency:
+  group: kart-mailer
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: mariokart
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Send pending emails
+        run: node mariokart/mailer/run.mjs
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          MAIL_FROM: ${{ secrets.MAIL_FROM }}
+          APP_URL: ${{ secrets.APP_URL }}

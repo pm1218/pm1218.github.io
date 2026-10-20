@@ -9,7 +9,7 @@ mariokart/
 ├── js/
 │   ├── config.js      Supabase URL + anon key (public by design)
 │   ├── app.js         hash router + every view (events, GP entry, stats, profile, admin)
-│   ├── api.js         Supabase data layer (auth, tables, RPC, storage, edge function)
+│   ├── api.js         Supabase data layer (auth, tables, RPC, storage)
 │   ├── data.js        points table, characters, cups → tracks
 │   ├── scoring.js     internal scoring model, normalisation, 4-race rule (client side)
 │   ├── wii-layout.js  Mario Kart Wii screen reader: OCR words → rows, digit isolation, decoding (pure, tested)
@@ -19,7 +19,7 @@ mariokart/
 │   ├── text.js, ui.js helpers
 ├── supabase/
 │   ├── schema.sql                         tables, constraints, RLS, whitelist trigger, submit RPC
-│   └── functions/send-gp-summary/index.ts edge function: summary e-mail via Nodemailer
+├── mailer/           session summary + event recap emails (dependency-free SMTP), run by GitHub Actions
 └── tests/            unit tests, OCR fixtures from 17 real photos, desktop evaluation tools,
                       Playwright mobile smoke test, in-browser vision check page
 ```
@@ -37,7 +37,8 @@ mariokart/
 5b. **Players only:** typically 4 players are tracked (members, or guests). CPUs race but are **not stored**: the photo reader drops rows without a player bar (listing them so a missed player can be added back), manual entry has no CPU option, and `submit_grand_prix` rejects CPU rows. Race placements are still out of all 12 karts so points match the game; session places are among the players.
 6. **Character icons are not shipped.** Nintendo artwork isn't redistributable. On the Wii the character's name is printed on the row, so the character comes from the text; icons are only needed for rows showing a Mii name, and that matcher **learns from your own confirmed photos** (each confirmed GP saves its icon crops as labelled templates).
 7. **Login:** an 8-digit email code (OTP). Supabase Auth handles code generation, single use and expiry (set to 600 s = 10 min).
-8. **Email:** any SMTP account you own (e.g. Gmail with an app password, ~500 mails/day free). Supabase Edge Functions block ports 25/587, so port **465** is used.
+8. **Email:** your own SMTP account — Proton Mail (port 587, STARTTLS, SMTP token on a custom-domain address) or any other. Supabase Edge Functions block outbound port 587, so summary emails are sent by a **GitHub Actions** job (`.github/workflows/kart-mailer.yml`) every 10 minutes instead.
+8a. **Events are live until finalized:** an event's standings are pinned at the top of Stats while it is live. It ends when its creator or an admin taps *Finalize now*, or automatically **12 hours after the last upload** (session created or scores confirmed). After that no sessions can be added (an admin can reopen it), and a final-standings recap is emailed.
 9. **Corrections:** confirmed GPs are locked; an admin can reopen one to fix it.
 10. **Admin bootstrap:** the first admin is added once by SQL; after that, admins manage the whitelist in the app.
 
@@ -54,7 +55,7 @@ mariokart/
 | Photos | Supabase Storage, private bucket | free tier (1 GB) |
 | OCR | **Tesseract.js** (Tesseract 5 compiled to WebAssembly) | Apache-2.0 |
 | CV | **OpenCV.js** 4.10 (perspective, row detection, template matching) | Apache-2.0 |
-| Email | **Nodemailer** inside a Supabase Edge Function, over your SMTP | MIT |
+| Email | Built-in SMTP client (`mailer/smtp.mjs`, STARTTLS) run by a scheduled **GitHub Action**, over your SMTP | MIT (this repo) |
 
 **Why this is the optimal choice here**
 
@@ -75,11 +76,12 @@ mariokart/
  ├─ app.js views ── api.js ──► Supabase REST (PostgREST) ─► Postgres + RLS
  │                         ├─► Supabase Auth (email OTP) ─► your SMTP
  │                         ├─► Storage (private bucket: photos, icon templates)
- │                         └─► Edge Function send-gp-summary ─► Nodemailer ─► SMTP
+ │
+ GitHub Actions (every 10 min) ─► mailer/run.mjs ─► Supabase REST (secret key) + your SMTP (587)
  └─ vision.js (OpenCV.js + Tesseract.js, WebAssembly, on-device)
 ```
 
-- **Backend**: Postgres schema + PL/pgSQL (`submit_grand_prix`, `reopen_grand_prix`), RLS policies, an `auth.users` trigger enforcing the whitelist, and one Deno edge function for email.
+- **Backend**: Postgres schema + PL/pgSQL (`submit_grand_prix`, `reopen_grand_prix`), RLS policies, an `auth.users` trigger enforcing the whitelist, event lifecycle functions (`finalize_event`, `finalize_stale_events`, `reopen_event`), and a scheduled GitHub Action that sends email.
 - **Frontend**: hash routes `#/events`, `#/events/:id`, `#/gp/:id` (entry form while draft, results once confirmed), `#/stats[/:eventId]`, `#/me`, `#/admin`. Hash routing works on static hosting and keeps the back button natural.
 - **Auth flow**: email → `signInWithOtp` → Postgres trigger rejects unknown emails (no account, no mail) → member receives 8-digit code → `verifyOtp` → Supabase issues a JWT session (short-lived access token + rotating refresh token) → app double-checks the whitelist and signs out anyone removed.
 - **Image pipeline**: rectify screen → find rows → OCR each row → parse → crop + match icons → suggest identities → normalise into a draft → uploader reviews/overrides → confirm.
@@ -115,7 +117,7 @@ Relationships: event 1-N grand_prix 1-N gp_participants; grand_prix 1-N races 1-
 - **Verify** (`api.verifyCode`): `verifyOtp({ email, token, type: 'email' })` → session JWT stored by supabase-js, auto-refreshed.
 - **Session security**: access tokens are short-lived signed JWTs; refresh tokens rotate; all data access is re-authorised by RLS on every request, so removing someone from `approved_users` cuts access immediately even if they still hold a token. On boot the app also signs out sessions whose email is no longer approved.
 - **Whitelist management**: Admin tab → add email (optionally admin), toggle admin, remove. The last admin can't be removed (constraint trigger).
-- **Secrets**: the anon key in `config.js` is public by design (RLS-guarded). The service-role key and SMTP password live only in Supabase secrets (environment variables of the edge function) — never in the repo.
+- **Secrets**: the anon key in `config.js` is public by design (RLS-guarded). The Supabase secret key and SMTP password live only in GitHub Actions secrets — never in the repo or the browser.
 
 ## 6. Event + score models
 
@@ -219,7 +221,7 @@ Insights Anya: clutch −0.5 (finishes strong), 2-GP win streak
 | `#/me` | display name, Mii name, favourite character, sign out |
 | `#/admin` | approve/remove emails, toggle admin |
 
-Server API: PostgREST tables (RLS), `rpc/submit_grand_prix`, `rpc/reopen_grand_prix`, `functions/v1/send-gp-summary`, Storage `score-photos`. It's a SPA rather than HTMX (HTMX needs a server rendering HTML; Pages can't). It degrades gracefully: hash routes keep back/forward working, `<noscript>` explains what's needed, OpenCV.js failure falls back to simpler CV, email failure leaves the GP confirmed with a resend button, and drafts survive reloads.
+Server API: PostgREST tables (RLS), `rpc/submit_grand_prix`, `rpc/reopen_grand_prix`, `rpc/finalize_event`, `rpc/finalize_stale_events`, `rpc/reopen_event`, Storage `score-photos`. It's a SPA rather than HTMX (HTMX needs a server rendering HTML; Pages can't). It degrades gracefully: hash routes keep back/forward working, `<noscript>` explains what's needed, OpenCV.js failure falls back to simpler CV, email failures leave the session confirmed and are retried on the next mailer run, and drafts survive reloads.
 
 **Example workflow (phone)**: Events → *Lake house weekend* → **+ Add Grand Prix** (Mushroom Cup) → 📷 Photo → *4 race screens* → snap R1-R4 → **Analyze photos** → karts appear with "📷 read 'Prateek' → Prateek (60%)" → fix any dropdown → **Confirm & email everyone** → GP page; everyone gets the summary.
 
@@ -260,18 +262,24 @@ All code is in this folder — no placeholders. The only values you supply are y
    - *Email Templates → Magic Link*: replace the body with a code, e.g. `<h2>Your Kart Club code</h2><p style="font-size:28px;letter-spacing:6px"><b>{{ .Token }}</b></p><p>Expires in 10 minutes. Single use.</p>` (do the same for *Confirm signup*).
    - *SMTP Settings*: enable custom SMTP (e.g. Gmail: host `smtp.gmail.com`, port 465, user = your Gmail, password = a Google **app password**). Supabase's built-in mailer only reaches project team members, so this step is required.
    - *URL Configuration → Site URL*: `https://prateekm.me/mariokart/`.
-3. **Edge function** (Supabase CLI, free):
-   ```bash
-   supabase link --project-ref <ref>
-   supabase secrets set SMTP_HOST=smtp.gmail.com SMTP_PORT=465 SMTP_USER=you@gmail.com \
-     SMTP_PASS='<app password>' MAIL_FROM='Kart Club <you@gmail.com>' APP_URL=https://prateekm.me/mariokart/
-   supabase functions deploy send-gp-summary
-   ```
-   (Run from the `mariokart/` folder so the CLI finds `supabase/functions/`.)
+3. **Emails** (GitHub Actions, free) — in the GitHub repo: **Settings → Secrets and variables → Actions → New repository secret**, add:
+
+   | Secret | Value |
+   |---|---|
+   | `SUPABASE_URL` | `https://<project-ref>.supabase.co` |
+   | `SUPABASE_SECRET_KEY` | Supabase → Project Settings → API Keys → **secret** key (`sb_secret_…`) |
+   | `SMTP_HOST` | `smtp.protonmail.ch` |
+   | `SMTP_PORT` | `587` |
+   | `SMTP_USER` | your Proton custom-domain address |
+   | `SMTP_PASS` | the Proton **SMTP token** (Settings → IMAP/SMTP → SMTP tokens) |
+   | `MAIL_FROM` | `Kart Club <that address>` |
+   | `APP_URL` | `https://prateekm.me/mariokart/` |
+
+   Then **Actions → Kart Club mailer → Run workflow** once to test. It runs every 10 minutes after that, sends a summary for each newly confirmed session (only from the last 3 days, so old ones aren't emailed), auto-finalizes idle events and sends their recap. GitHub pauses scheduled workflows in repos with no commits for 60 days — re-enable it on the Actions tab if that happens.
 4. **Frontend** — put the project URL and anon key (Project Settings → API) in `js/config.js`, commit, push. GitHub Pages publishes `https://prateekm.me/mariokart/` within a minute.
 5. **Add members** in the Admin tab. Everyone sets a Mii name + favourite character on the *Me* tab so photo suggestions work.
 
-**Upgrading an existing database** (cups → VS mode): re-run the whole `supabase/schema.sql` in the SQL editor. It is idempotent: it makes `cup` and `track` optional, adds the no-CPU rule to `submit_grand_prix`, and keeps all existing data.
+**Upgrading an existing database**: re-run the whole `supabase/schema.sql` in the SQL editor. It is idempotent and keeps existing data (adds VS mode, optional tracks, the no-CPU rule, and event finalization).
 
 **Tests**: `npm test` (Node 20+) runs 16 unit tests, including accuracy on the 17 real-photo fixtures; `supabase/schema.sql` was verified against PostgreSQL 16 (whitelist trigger, RLS, 4-race rule, ties, last-admin guard); `tests/browser/smoke.py` drives the whole UI at phone size with Playwright against an in-memory Supabase mock; open `/mariokart/tests/browser/vision-check.html` to run the photo reader in your own browser.
 

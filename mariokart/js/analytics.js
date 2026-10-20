@@ -324,6 +324,49 @@ export function trackReport(gps, profiles) {
   return { overall, players, trackCount: overall.length, plays: overall.reduce((s, t) => s + t.plays, 0) };
 }
 
+/**
+ * Live leaderboard for one event: per player sessions, wins, podiums, total
+ * and average points, average finish. Ordered by wins, then average points.
+ */
+export function eventSummary(gps, profiles) {
+  const names = new Map(profiles.map((p) => [p.id, p.display_name]));
+  const confirmed = [...gps].filter((g) => g.participants?.length).sort(byTime);
+  const agg = new Map();
+  for (const gp of confirmed) {
+    for (const p of gp.participants) {
+      if (!p.profile_id) continue;
+      const a = agg.get(p.profile_id) ?? { profile_id: p.profile_id, name: names.get(p.profile_id) ?? p.label, sessions: 0, wins: 0, podiums: 0, points: 0, places: [] };
+      a.sessions++; a.points += p.final_total; a.places.push(p.final_place);
+      if (p.final_place === 1) a.wins++;
+      if (p.final_place <= 3) a.podiums++;
+      agg.set(p.profile_id, a);
+    }
+  }
+  const rows = [...agg.values()].map(({ places, ...a }) => ({ ...a, avgPts: round(a.points / a.sessions), avgPlace: round(mean(places), 2) }))
+    .sort((a, b) => b.wins - a.wins || b.avgPts - a.avgPts || b.points - a.points)
+    .map((r, i) => ({ rank: i + 1, ...r }));
+  const last = confirmed[confirmed.length - 1] || null;
+  const lastWinner = last ? last.participants.find((p) => p.final_place === 1) : null;
+  return { rows, sessions: confirmed.length, last: last && { seq: last.seq, confirmed_at: last.confirmed_at, winner: lastWinner ? (names.get(lastWinner.profile_id) ?? lastWinner.label) : null, points: lastWinner?.final_total ?? null } };
+}
+
+export const AUTO_FINALIZE_HOURS = 12;
+
+/** Last upload activity for an event row with its grand_prix(created_at, confirmed_at). */
+export function eventLastActivity(ev) {
+  const times = [ev.created_at, ...(ev.grand_prix || []).flatMap((g) => [g.created_at, g.confirmed_at])].filter(Boolean).map((t) => new Date(t).getTime());
+  return times.length ? new Date(Math.max(...times)) : null;
+}
+
+/** 'live' | 'final', and when a live event will auto-finalize. */
+export function eventState(ev, now = Date.now()) {
+  if (ev.finalized_at) return { state: 'final', finalizedAt: new Date(ev.finalized_at) };
+  const last = eventLastActivity(ev);
+  const autoAt = last ? new Date(last.getTime() + AUTO_FINALIZE_HOURS * 3600e3) : null;
+  if (autoAt && autoAt.getTime() <= now) return { state: 'final', finalizedAt: autoAt };
+  return { state: 'live', lastActivity: last, autoFinalizeAt: autoAt };
+}
+
 // Head-to-head between two members.
 export function headToHead(gps, aId, bId) {
   const res = { gps: 0, aWins: 0, bWins: 0, ties: 0, avgMargin: null, races: 0, aRaceWins: 0, bRaceWins: 0 };

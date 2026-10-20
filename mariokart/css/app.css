@@ -296,3 +296,10 @@ table.sticky-first thead th:first-child { background: var(--surface-2); }
   .photo-grid.n4 { grid-template-columns: 1fr; }
 }
 .subhead { margin: 18px 0 6px; font-size: 1rem; }
+.pill.live { background: var(--accent); color: var(--accent-ink); position: relative; padding-left: 20px; }
+.pill.live::before { content: ""; position: absolute; left: 8px; top: 50%; width: 7px; height: 7px; margin-top: -3.5px; border-radius: 50%; background: currentColor; animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: 0.25; } }
+.banner.live { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); color: var(--text); }
+.banner .btn.small { margin-left: 4px; vertical-align: middle; }
+.live-card { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.live-title { font-weight: 800; font-size: 1.1rem; color: inherit; text-decoration: none; }

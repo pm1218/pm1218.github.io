@@ -25,7 +25,7 @@ let session = null;
 
 function embed(table, row, sel) {
   const out = { ...row };
-  if (table === 'events' && sel.includes('grand_prix(')) out.grand_prix = db.grand_prix.filter((g) => g.event_id === row.id).map(({ id, status }) => ({ id, status }));
+  if (table === 'events' && sel.includes('grand_prix(')) out.grand_prix = db.grand_prix.filter((g) => g.event_id === row.id).map(({ id, status, created_at, confirmed_at }) => ({ id, status, created_at, confirmed_at }));
   if (table === 'grand_prix') {
     if (sel.includes('gp_participants(')) out.gp_participants = db.gp_participants.filter((p) => p.gp_id === row.id);
     if (sel.includes('races(')) out.races = db.races.filter((r) => r.gp_id === row.id).map((r) => ({ ...r, race_results: db.race_results.filter((x) => x.race_id === r.id) }));
@@ -113,6 +113,9 @@ export function createClient() {
       try {
         if (fn === 'submit_grand_prix') return { data: submit(args.p_gp_id, args.p_payload), error: null };
         if (fn === 'reopen_grand_prix') return { data: null, error: null };
+        if (fn === 'finalize_stale_events') return { data: 0, error: null };
+        if (fn === 'finalize_event') { db.events.find((e) => e.id === args.p_event_id).finalized_at = now(); return { data: null, error: null }; }
+        if (fn === 'reopen_event') { db.events.find((e) => e.id === args.p_event_id).finalized_at = null; return { data: null, error: null }; }
       } catch (e) { return { data: null, error: { message: e.message } }; }
       return { data: null, error: { message: `unknown rpc ${fn}` } };
     },

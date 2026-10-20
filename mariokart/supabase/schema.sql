@@ -195,6 +195,10 @@ create table if not exists public.icon_templates (
   created_at  timestamptz not null default now()
 );
 
+-- Events: live until finalized (by hand, or automatically after 12 h without uploads).
+alter table public.events add column if not exists finalized_at timestamptz;
+alter table public.events add column if not exists recap_sent_at timestamptz;
+
 -- VS mode (safe to re-run on an existing database)
 alter table public.grand_prix alter column cup drop not null;
 alter table public.races alter column track drop not null;
@@ -218,6 +222,70 @@ end $$;
 drop trigger if exists mkw_set_gp_seq on public.grand_prix;
 create trigger mkw_set_gp_seq before insert on public.grand_prix
   for each row execute function public.set_gp_seq();
+
+-- ---------------------------------------------------------------------
+-- Event lifecycle
+-- ---------------------------------------------------------------------
+create or replace function public.is_service_role()
+returns boolean language sql stable as $$
+  select coalesce(auth.jwt() ->> 'role', '') = 'service_role'
+$$;
+
+-- Last upload activity: event creation, a session started, or scores confirmed.
+create or replace function public.event_last_activity(p_event_id uuid)
+returns timestamptz language sql stable security definer set search_path = public as $$
+  select greatest(e.created_at, max(g.created_at), max(g.confirmed_at))
+    from public.events e left join public.grand_prix g on g.event_id = e.id
+   where e.id = p_event_id
+   group by e.created_at
+$$;
+
+create or replace function public.event_is_over(p_event_id uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select e.finalized_at is not null or public.event_last_activity(e.id) < now() - interval '12 hours'
+    from public.events e where e.id = p_event_id
+$$;
+
+-- Marks every event idle for 12 h as finalized (at last activity + 12 h).
+-- Called by the app on load and by the mailer on every run.
+create or replace function public.finalize_stale_events()
+returns int language plpgsql security definer set search_path = public as $$
+declare n int;
+begin
+  if not (public.is_approved() or public.is_service_role()) then
+    raise exception 'not approved' using errcode = '42501';
+  end if;
+  update public.events e
+     set finalized_at = public.event_last_activity(e.id) + interval '12 hours'
+   where e.finalized_at is null
+     and public.event_last_activity(e.id) < now() - interval '12 hours';
+  get diagnostics n = row_count;
+  return n;
+end $$;
+
+create or replace function public.finalize_event(p_event_id uuid)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  if not public.is_approved() then raise exception 'not approved' using errcode = '42501'; end if;
+  if not exists (select 1 from public.events where id = p_event_id and (created_by = auth.uid() or public.is_admin())) then
+    raise exception 'only the event creator or an admin can finalize it' using errcode = '42501';
+  end if;
+  update public.events set finalized_at = now() where id = p_event_id and finalized_at is null;
+end $$;
+
+create or replace function public.reopen_event(p_event_id uuid)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  if not public.is_admin() then raise exception 'admins only' using errcode = '42501'; end if;
+  update public.events set finalized_at = null, recap_sent_at = null where id = p_event_id;
+end $$;
+
+revoke all on function public.finalize_stale_events() from public, anon;
+grant execute on function public.finalize_stale_events() to authenticated, service_role;
+revoke all on function public.finalize_event(uuid) from public, anon;
+grant execute on function public.finalize_event(uuid) to authenticated;
+revoke all on function public.reopen_event(uuid) from public, anon;
+grant execute on function public.reopen_event(uuid) to authenticated;
 
 -- ---------------------------------------------------------------------
 -- The ONLY write path for scores. Validates and confirms atomically.
@@ -262,7 +330,10 @@ begin
 
   select * into v_gp from public.grand_prix where id = p_gp_id for update;
   if not found then raise exception 'grand prix not found'; end if;
-  if v_gp.status = 'confirmed' then raise exception 'grand prix already confirmed'; end if;
+  if v_gp.status = 'confirmed' then raise exception 'this session is already confirmed'; end if;
+  if public.event_is_over(v_gp.event_id) then
+    raise exception 'this event is finalized — no more uploads (an admin can reopen it)';
+  end if;
 
   if v_mode not in ('total','races') then
     raise exception 'mode must be "total" or "races"';
@@ -476,7 +547,8 @@ create policy mkw_event_delete on public.events for delete to authenticated
 -- Status changes only happen through submit_grand_prix/reopen_grand_prix.
 drop policy if exists mkw_gp_insert on public.grand_prix;
 create policy mkw_gp_insert on public.grand_prix for insert to authenticated
-  with check (public.is_approved() and created_by = auth.uid() and status = 'draft');
+  with check (public.is_approved() and created_by = auth.uid() and status = 'draft'
+              and not public.event_is_over(event_id));
 drop policy if exists mkw_gp_delete on public.grand_prix;
 create policy mkw_gp_delete on public.grand_prix for delete to authenticated
   using (public.is_approved() and ((created_by = auth.uid() and status = 'draft') or public.is_admin()));
