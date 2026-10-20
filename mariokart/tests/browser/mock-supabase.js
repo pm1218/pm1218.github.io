@@ -98,7 +98,7 @@ function submit(gpId, p) {
   for (const r of p.races) {
     const rid = uid();
     db.races.push({ id: rid, gp_id: gpId, race_number: r.race_number, track: r.track });
-    for (const x of r.results) db.race_results.push({ id: uid(), race_id: rid, participant_id: ids[x.key], placement: x.placement, points: POINTS[x.placement - 1] });
+    for (const x of r.results || []) db.race_results.push({ id: uid(), race_id: rid, participant_id: ids[x.key], placement: x.placement, points: POINTS[x.placement - 1] });
   }
   db.score_uploads.push({ id: uid(), gp_id: gpId, source: p.source, image_paths: p.image_paths || [], created_at: now() });
   Object.assign(gp, { status: 'confirmed', entry_mode: p.mode, confirmed_by: ME.id, confirmed_at: now() });

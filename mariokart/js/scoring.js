@@ -131,7 +131,8 @@ export function toPayload(draft) {
           track: String(r.track || '').trim() || null,
           results: draft.participants.map((p) => ({ key: p.key, placement: r.results[p.key] })),
         }))
-      : [],
+      // Final totals can still say which tracks were played (no placements).
+      : draft.races.filter((r) => String(r.track || '').trim()).map((r) => ({ race_number: r.race_number, track: r.track.trim() })),
     image_paths: draft.image_paths,
     ocr_raw: draft.ocr_raw,
   };

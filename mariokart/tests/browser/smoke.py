@@ -28,7 +28,7 @@ def shot(page, name):
     overflow = page.evaluate("document.documentElement.scrollWidth - window.innerWidth")
     assert overflow <= 0, f"{name}: page scrolls sideways by {overflow}px"
     text = page.inner_text("main")
-    assert not re.search(r"\b(null|undefined|NaN)\b", text), f"{name}: stray null/undefined/NaN rendered"
+    m = re.search(r"[\s\S]{0,120}\b(null|undefined|NaN)\b[\s\S]{0,60}", text); assert not m, f"{name}: stray null/undefined/NaN rendered: {m.group(0) if m else ''}"
 
 
 def run():
@@ -105,6 +105,9 @@ def run():
             page.get_by_label(f"{name} total").fill(total)
         expect(page.get_by_text("Dev needs a total from 0 to 60.")).to_be_visible()
         page.get_by_label("Dev total").fill("47")
+        # optional tracks with final totals
+        page.get_by_label("Race 1 track").select_option("Coconut Mall")
+        page.get_by_label("Race 3 track").select_option("Rainbow Road")
         page.get_by_role("button", name="Confirm & email everyone").click()
         expect(page.locator(".results tbody tr").first).to_contain_text("Anya")
 
@@ -128,6 +131,8 @@ def run():
         page.get_by_role("link", name="Stats").click()
         expect(page.get_by_role("heading", name="Power rankings")).to_be_visible()
         expect(page.get_by_role("heading", name="Head to head")).to_be_visible()
+        expect(page.get_by_role("heading", name="Tracks")).to_be_visible()
+        expect(page.locator("table").filter(has_text="Rainbow Road")).to_have_count(2)  # overall + my tracks
         expect(page.locator(".h2h-score strong")).to_have_text(re.compile(r"\d+ – \d+"))
         shot(page, "08-stats")
 

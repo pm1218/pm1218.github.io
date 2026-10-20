@@ -32,7 +32,9 @@ export const gps = [
     [[2, 1, 3, 4], [1, 4, 2, 3], [5, 1, 2, 3], [4, 2, 1, 3]],
     ['Mario Circuit', 'Coconut Mall', 'DK Summit', "Wario's Gold Mine"]),
   {
-    id: 'gp3', event_id: 'ev-lake', seq: 3, cup: 'Star', confirmed_at: '2026-10-18T20:00:00Z', entry_mode: 'total', races: [],
+    // Final totals only, with the 4 tracks recorded (no placements).
+    id: 'gp3', event_id: 'ev-lake', seq: 3, cup: null, confirmed_at: '2026-10-18T20:00:00Z', entry_mode: 'total',
+    races: [['Coconut Mall', 1], ['Rainbow Road', 2], ['DK Summit', 3], ['Luigi Circuit', 4]].map(([track, n]) => ({ race_number: n, track, results: [] })),
     participants: [
       { id: 'gp3-p0', profile_id: 'u-pm', label: 'Prateek', character: 'Yoshi', is_cpu: false, final_total: 49, final_place: 1 },
       { id: 'gp3-p1', profile_id: 'u-an', label: 'Anya', character: 'Peach', is_cpu: false, final_total: 44, final_place: 2 },

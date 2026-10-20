@@ -134,7 +134,7 @@ function buildEmail(gp: Gp, eventGps: Gp[], appUrl: string) {
     <div style="overflow-x:auto"><table role="presentation" style="width:100%;border-collapse:collapse">
       <tr><th style="${head}"></th><th style="${head}">Kart</th>${raceHeads}<th style="${head}text-align:right">Pts</th></tr>${standings}
     </table></div>
-    ${gp.entry_mode === 'races' && races.some((r) => r.track) ? `<p style="margin:10px 8px 0;font-size:12px;color:#667085">Tracks: ${races.map((r) => `R${r.race_number} ${esc(r.track || '—')}`).join(' · ')}</p>` : ''}
+    ${races.some((r) => r.track) ? `<p style="margin:10px 8px 0;font-size:12px;color:#667085">Tracks: ${races.map((r) => `R${r.race_number} ${esc(r.track || '—')}`).join(' · ')}</p>` : ''}
     <h3 style="margin:20px 8px 6px;font-size:15px">${esc(gp.events.name)} so far (${eventGps.length} GP${eventGps.length === 1 ? '' : 's'})</h3>
     <table role="presentation" style="width:100%;border-collapse:collapse">
       <tr><th style="${head}">Player</th><th style="${head}text-align:right">Avg pts</th><th style="${head}text-align:right">Avg place</th><th style="${head}text-align:right">Wins</th></tr>${eventRows}

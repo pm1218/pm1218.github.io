@@ -14,7 +14,7 @@ import {
 } from './scoring.js';
 import { suggestIdentities } from './identity.js';
 import {
-  powerRankings, eloRatings, consistencyMetrics, trackStats, headToHead, headToHeadMatrix, insights,
+  powerRankings, eloRatings, consistencyMetrics, trackReport, headToHead, headToHeadMatrix, insights,
 } from './analytics.js';
 import { h, clear, selectEl, toast, charBadge, fmtDate, fmtDateTime, spinner, emptyState, busy, table } from './ui.js';
 
@@ -209,6 +209,9 @@ async function viewGp(id) {
     charBadge(p.character), h('strong', {}, p.final_total)]), { stickyFirst: false, cls: 'results' });
 
   let raceTable = null;
+  if (gp.entry_mode !== 'races' && gp.races.some((r) => r.track)) {
+    raceTable = h('section', {}, h('h2', {}, 'Tracks played'), h('ol', { class: 'track-list' }, gp.races.map((r) => h('li', {}, r.track))));
+  }
   if (gp.entry_mode === 'races') {
     raceTable = h('section', {}, h('h2', {}, 'Race by race'),
       table(['Player', ...gp.races.map((r) => `R${r.race_number}`), 'Total'], parts.map((p) => [
@@ -347,6 +350,18 @@ function viewGpEntry(gp) {
           })))
       : null;
     return h('section', {}, h('h2', {}, `Players (${draft.participants.length})`), rows.length ? rows : h('p', { class: 'muted' }, 'Add the players who raced (usually 4). CPUs aren\u2019t tracked.'), h('div', { class: 'btn-row' }, addMember, addAll), cpuRows);
+  }
+
+  // ---- tracks played (optional in final-totals mode)
+  function tracksEditor() {
+    return h('section', {},
+      h('h2', {}, 'Tracks played'),
+      h('p', { class: 'muted small' }, 'Optional — adds this session to the track stats.'),
+      h('div', { class: 'card tight' }, draft.races.map((r, i) => {
+        const sel = selectEl([{ value: '', label: '—' }, ...ALL_TRACKS], r.track || '', { 'aria-label': `Race ${i + 1} track` });
+        sel.addEventListener('change', () => { r.track = sel.value; persist(); });
+        return h('label', { class: 'total-row' }, h('span', {}, `Race ${i + 1}`), sel);
+      })));
   }
 
   // ---- final totals
@@ -526,6 +541,7 @@ function viewGpEntry(gp) {
       analysisPanel(),
       tab !== 'photo' ? kartEditor() : null,
       tab === 'total' ? totalsEditor() : null,
+      tab === 'total' ? tracksEditor() : null,
       tab === 'races' ? racesEditor() : null,
       tab !== 'photo' ? summary : null,
       tab !== 'photo' ? h('div', { class: 'sticky-action' }, confirmBtn) : null,
@@ -555,7 +571,7 @@ function cloneCanvas(src) {
 
 // ==================================================================== stats
 function powerTable(rows) {
-  return table(['Player', 'Power', 'GPs', 'Avg pts', 'Avg place', 'Wins', 'Podium', 'Form'],
+  return table(['Player', 'Power', 'Sessions', 'Avg pts', 'Avg place', 'Wins', 'Podium', 'Form'],
     rows.map((r) => [`${r.rank}. ${r.name}`, h('strong', {}, r.power), r.gps, r.avgPts, r.avgPlace, `${r.winRate}%`, `${r.podiumRate}%`, r.form]));
 }
 
@@ -571,7 +587,7 @@ async function viewStats(eventId) {
   const power = powerRankings(gps, P);
   const elo = eloRatings(gps, P);
   const cons = consistencyMetrics(gps, P);
-  const tracks = trackStats(gps, P);
+  const tracks = trackReport(gps, P);
   const h2hM = headToHeadMatrix(gps, P);
   const ins = insights(gps, P);
   const raceGps = gps.filter((g) => g.entry_mode === 'races').length;
@@ -588,18 +604,34 @@ async function viewStats(eventId) {
     clear(h2hOut).append(r.gps
       ? h('div', { class: 'h2h' },
           h('div', { class: 'h2h-score' }, h('span', {}, profileName(a)), h('strong', {}, `${r.aWins} – ${r.bWins}`), h('span', {}, profileName(b))),
-          h('p', { class: 'muted small' }, `${r.gps} GPs together${r.ties ? `, ${r.ties} tied` : ''} · avg margin ${r.avgMargin > 0 ? '+' : ''}${r.avgMargin} pts for ${profileName(a)}`),
+          h('p', { class: 'muted small' }, `${r.gps} session${r.gps === 1 ? '' : 's'} together${r.ties ? `, ${r.ties} tied` : ''} · avg margin ${r.avgMargin > 0 ? '+' : ''}${r.avgMargin} pts for ${profileName(a)}`),
           r.races ? h('p', { class: 'muted small' }, `Races: ${r.aRaceWins} – ${r.bRaceWins} (${r.races} head-to-head races)`) : null)
       : h('p', { class: 'muted' }, 'These two haven’t raced in the same session yet.'));
   };
   aSel.addEventListener('change', drawH2h); bSel.addEventListener('change', drawH2h); drawH2h();
 
   // Track filter
-  const trackPlayer = selectEl([{ value: '', label: 'Everyone' }, ...players.map((p) => ({ value: p.id, label: p.name }))], '', { 'aria-label': 'Track table player' });
+  // Tracks: overall, then one player at a time (picker), best tracks first.
+  const dash = (v) => (v === null || v === undefined ? '—' : v);
+  const trackPlayer = selectEl(tracks.players.map((p) => ({ value: p.profile_id, label: p.name })), tracks.players.find((p) => p.profile_id === state.me.profile.id)?.profile_id ?? tracks.players[0]?.profile_id, { 'aria-label': 'Player for track stats' });
   const trackOut = h('div', {});
   const drawTracks = () => {
-    const rows = tracks.perTrack.filter((t) => !trackPlayer.value || t.profile_id === trackPlayer.value).sort((x, y) => x.track.localeCompare(y.track) || x.avgPlace - y.avgPlace);
-    clear(trackOut).append(rows.length ? table(['Track', 'Player', 'Races', 'Avg place', 'Avg pts'], rows.map((t) => [t.track, t.name, t.races, t.avgPlace, t.avgPoints])) : h('p', { class: 'muted' }, 'No race-by-race data yet.'));
+    const pl = tracks.players.find((p) => p.profile_id === trackPlayer.value);
+    if (!pl) return clear(trackOut).append(h('p', { class: 'muted' }, 'No tracks recorded for this player yet.'));
+    const withPlace = pl.tracks.filter((t) => t.avgPlace !== null);
+    const ranked = withPlace.length >= 2 ? withPlace : pl.tracks.filter((t) => t.avgSessionPlace !== null);
+    const best = ranked.slice(0, Math.min(3, Math.ceil(ranked.length / 2)));
+    const worst = ranked.slice(best.length).slice(-3).reverse();
+    const key = (t) => (t.avgPlace ?? t.avgSessionPlace);
+    const fmt = (t) => `${t.track} (${t.avgPlace !== null ? `avg ${ordinal(Math.round(t.avgPlace))}` : `${t.avgSessionPlace} session avg`})`;
+    clear(trackOut).append(...[
+      // Only call tracks best/worst when they actually differ.
+      ranked.length >= 2 && key(ranked[0]) !== key(ranked[ranked.length - 1]) ? h('div', { class: 'bw' },
+        h('p', { class: 'ok-text small' }, '▲ Best: ', best.map(fmt).join(', ')),
+        worst.length ? h('p', { class: 'warn-text small' }, '▼ Worst: ', worst.map(fmt).join(', ')) : null) : null,
+      table(['Track', 'Played', 'Avg place', 'Avg pts', 'Wins', 'Session avg'],
+        pl.tracks.map((t) => [t.track, t.plays, t.avgPlace !== null ? `${t.avgPlace} (${t.placedRaces})` : '—', dash(t.avgPoints), t.wins || '—', dash(t.avgSessionPlace)])),
+    ].filter(Boolean));
   };
   trackPlayer.addEventListener('change', drawTracks); drawTracks();
 
@@ -607,20 +639,24 @@ async function viewStats(eventId) {
 
   page('Stats', header,
     h('p', { class: 'muted small' }, `${gps.length} confirmed VS session${gps.length === 1 ? '' : 's'} · ${raceGps} with race-by-race detail`),
-    section('Power rankings', 'Blend of points share (45%), finishing place vs. field (30%), win rate (15%) and recent form (10%), shrunk toward the group average for players with few GPs.', powerTable(power)),
+    section('Power rankings', 'Blend of points share (45%), finishing place vs. field (30%), win rate (15%) and recent form (10%), shrunk toward the group average for players with few sessions.', powerTable(power)),
     section('Skill rating (Elo)', 'Every session counts as head-to-head duels between players by final total. Starts at 1500.',
-      table(['Player', 'Elo', 'GPs'], elo.map((r) => [`${r.rank}. ${r.name}`, h('strong', {}, r.elo), r.gps]))),
+      table(['Player', 'Elo', 'Sessions'], elo.map((r) => [`${r.rank}. ${r.name}`, h('strong', {}, r.elo), r.gps]))),
     section('Consistency', 'Consistency 0-100: 100 = same place every race, 50 = as scattered as a random finisher. Volatility = average swing in total between consecutive sessions.',
-      table(['Player', 'Consistency', 'GP σ', 'CV', 'Volatility', 'Race σ'], cons.map((c) => [c.name, h('strong', {}, c.consistency ?? '—'), c.gpStdev ?? '—', c.cv ?? '—', c.volatility ?? '—', c.raceStdev ?? '—']))),
+      table(['Player', 'Consistency', 'Total σ', 'CV', 'Volatility', 'Race σ'], cons.map((c) => [c.name, h('strong', {}, c.consistency ?? '—'), c.gpStdev ?? '—', c.cv ?? '—', c.volatility ?? '—', c.raceStdev ?? '—']))),
     section('Head to head', null, h('div', { class: 'grid-2' }, aSel, bSel), h2hOut,
       h('details', {}, h('summary', {}, 'Win % matrix (row vs column)'), h2hMatrixTable(h2hM))),
-    section('Best & worst tracks', 'Average race placement (needs race-by-race GPs).',
-      tracks.bestWorst.length ? h('div', { class: 'bw-grid' }, tracks.bestWorst.map((p) => h('div', { class: 'bw' },
-        h('h3', {}, p.name),
-        h('p', { class: 'ok-text small' }, '▲ ', p.best.map((t) => `${t.track} (${t.avgPlace})`).join(', ')),
-        h('p', { class: 'warn-text small' }, '▼ ', p.worst.map((t) => `${t.track} (${t.avgPlace})`).join(', '))))) : h('p', { class: 'muted' }, 'No race-by-race data yet.'),
-      tracks.trackKings.length ? h('details', {}, h('summary', {}, 'Track kings'), table(['Track', 'King', 'Avg place', 'Races'], tracks.trackKings.map((t) => [t.track, t.king, t.avgPlace, t.races]))) : null),
-    section('Average placement per track', null, h('div', { class: 'card tight' }, trackPlayer), trackOut),
+    section('Tracks',
+      `${tracks.trackCount} track${tracks.trackCount === 1 ? '' : 's'} · ${tracks.plays} race${tracks.plays === 1 ? '' : 's'} recorded. Place = finishing position out of 12 (only from race-by-race entries). Tracks added to final-score sessions count toward "Played" and "Session avg" (average finish among the players in sessions that included the track).`,
+      tracks.overall.length
+        ? table(['Track', 'Played', 'Avg place', 'Best player', 'Most wins'], tracks.overall.map((t) => [
+            t.track, t.plays, t.avgPlace !== null ? t.avgPlace : '—',
+            t.best ? `${t.best.name} (${t.best.avgPlace})` : '—',
+            t.mostWins ? `${t.mostWins.name} ×${t.mostWins.wins}` : '—']))
+        : h('p', { class: 'muted' }, 'No tracks recorded yet — pick the 4 tracks when entering a session.'),
+      tracks.players.length ? h('h3', { class: 'subhead' }, 'By player') : null,
+      tracks.players.length ? h('div', { class: 'card tight' }, trackPlayer) : null,
+      tracks.players.length ? trackOut : null),
     section('More insights', 'Clutch = race 4 avg placement minus races 1-3 (negative finishes strong). Comebacks = session wins after 4th or worse (of 12) in race 1.',
       table(['Player', 'Best session', '60s', 'Win streak', 'Clutch', 'Comebacks', 'Best character'], ins.map((x) => [x.name, x.bestGp, x.perfectGps, x.winStreak, x.clutch ?? '—', x.comebacks, x.characters[0] ? `${x.characters[0].character} (${x.characters[0].avgPts})` : '—']))));
 }

@@ -11,7 +11,7 @@ import {
   emptyDraft, makeParticipant, validateDraft, computeStandings, toPayload,
   draftFromScreens, completedRaceCount, racePlacementOf, addExtraAsPlayer,
 } from '../js/scoring.js';
-import { powerRankings, eloRatings, consistencyMetrics, trackStats, headToHead, insights, fullReport } from '../js/analytics.js';
+import { powerRankings, eloRatings, consistencyMetrics, trackStats, trackReport, headToHead, insights, fullReport } from '../js/analytics.js';
 import { profiles, gps } from './sample-data.mjs';
 
 // OCR fixtures from 17 real photos of a TV (text + boxes only; no images).
@@ -237,4 +237,21 @@ test('analytics: power, elo, consistency, tracks, head-to-head', () => {
   const ins = insights(gps, profiles);
   assert.ok(ins.find((i) => i.name === 'Prateek').bestGp >= 49);
   assert.equal(fullReport(gps, profiles).gpCount, 3);
+});
+
+test('track report: overall and per player, including final-score sessions', () => {
+  const r = trackReport(gps, profiles);
+  const luigiC = r.overall.find((t) => t.track === 'Luigi Circuit');
+  assert.equal(luigiC.plays, 2, 'once race-by-race (gp1), once listed with final totals (gp3)');
+  assert.equal(luigiC.sessions, 2);
+  assert.equal(luigiC.placedRaces, 3, 'placements only from the race-by-race session');
+  assert.equal(luigiC.best.name, 'Prateek');
+  const rainbow = r.overall.find((t) => t.track === 'Rainbow Road');
+  assert.deepEqual([rainbow.plays, rainbow.avgPlace, rainbow.best], [1, null, null]);
+  const sam = r.players.find((p) => p.name === 'Sam');
+  assert.equal(sam.tracks.length, 4, 'Sam only played the final-score session');
+  assert.ok(sam.tracks.every((t) => t.avgPlace === null && t.avgSessionPlace === 3));
+  const pm = r.players.find((p) => p.name === 'Prateek').tracks.find((t) => t.track === 'Luigi Circuit');
+  assert.deepEqual([pm.plays, pm.placedRaces, pm.avgPlace, pm.wins, pm.avgSessionPlace], [2, 1, 1, 1, 1]);
+  assert.equal(r.trackCount, 9, '8 race-by-race tracks + Rainbow Road');
 });

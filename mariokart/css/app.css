@@ -295,3 +295,4 @@ table.sticky-first thead th:first-child { background: var(--surface-2); }
   .grid-2 { grid-template-columns: 1fr; }
   .photo-grid.n4 { grid-template-columns: 1fr; }
 }
+.subhead { margin: 18px 0 6px; font-size: 1rem; }

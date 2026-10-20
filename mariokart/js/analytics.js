@@ -242,6 +242,88 @@ export function trackStats(gps, profiles) {
   return { perTrack, bestWorst, trackKings };
 }
 
+/**
+ * Track stats from every confirmed session that recorded tracks — including
+ * final-total sessions, which list the tracks played but no placements.
+ *
+ * overall:   per track — times played, sessions, players' average race
+ *            placement (out of 12, where placements were entered), wins, and
+ *            the player who does best there
+ * players:   per member, per track — times played, average placement and
+ *            points, wins, and their average finish among the players in
+ *            sessions that included the track (works for final-total uploads)
+ */
+export function trackReport(gps, profiles) {
+  const names = new Map(profiles.map((p) => [p.id, p.display_name]));
+  const tracks = new Map();
+  const per = new Map(); // `${profile}|${track}` → stats
+  const getT = (t) => { if (!tracks.has(t)) tracks.set(t, { track: t, plays: 0, sessions: new Set(), places: [], wins: new Map(), byPlayer: new Map() }); return tracks.get(t); };
+  const getP = (pid, t) => {
+    const k = `${pid}|${t}`;
+    if (!per.has(k)) per.set(k, { profile_id: pid, track: t, plays: 0, places: [], points: [], wins: 0, podiums: 0, sessionPlaces: [], sessions: new Set() });
+    return per.get(k);
+  };
+  for (const gp of gps) {
+    const members = gp.participants.filter((p) => p.profile_id);
+    for (const race of gp.races || []) {
+      if (!race.track) continue;
+      const T = getT(race.track);
+      T.plays++;
+      T.sessions.add(gp.id);
+      for (const m of members) {
+        const P = getP(m.profile_id, race.track);
+        P.plays++;
+        if (!P.sessions.has(gp.id)) { P.sessions.add(gp.id); P.sessionPlaces.push(m.final_place); }
+        const res = (race.results || []).find((r) => r.participant_id === m.id);
+        if (!res) continue;
+        P.places.push(res.placement); P.points.push(res.points);
+        if (res.placement === 1) { P.wins++; T.wins.set(m.profile_id, (T.wins.get(m.profile_id) || 0) + 1); }
+        if (res.placement <= 3) P.podiums++;
+        T.places.push(res.placement);
+        if (!T.byPlayer.has(m.profile_id)) T.byPlayer.set(m.profile_id, []);
+        T.byPlayer.get(m.profile_id).push(res.placement);
+      }
+    }
+  }
+  const overall = [...tracks.values()].map((T) => {
+    const best = [...T.byPlayer.entries()].map(([pid, pl]) => ({ pid, avg: mean(pl), n: pl.length }))
+      .sort((a, b) => a.avg - b.avg || b.n - a.n)[0];
+    const topWinner = [...T.wins.entries()].sort((a, b) => b[1] - a[1])[0];
+    return {
+      track: T.track,
+      plays: T.plays,
+      sessions: T.sessions.size,
+      placedRaces: T.places.length,
+      avgPlace: round(mean(T.places), 2),
+      best: best ? { name: names.get(best.pid) ?? 'Unknown', avgPlace: round(best.avg, 2), races: best.n } : null,
+      mostWins: topWinner ? { name: names.get(topWinner[0]) ?? 'Unknown', wins: topWinner[1] } : null,
+    };
+  }).sort((a, b) => b.plays - a.plays || a.track.localeCompare(b.track));
+
+  const byPlayer = new Map();
+  for (const P of per.values()) {
+    if (!byPlayer.has(P.profile_id)) byPlayer.set(P.profile_id, []);
+    byPlayer.get(P.profile_id).push({
+      track: P.track,
+      plays: P.plays,
+      placedRaces: P.places.length,
+      avgPlace: round(mean(P.places), 2),
+      avgPoints: round(mean(P.points)),
+      wins: P.wins,
+      podiums: P.podiums,
+      avgSessionPlace: round(mean(P.sessionPlaces), 2),
+    });
+  }
+  // Best first: by race placement where known, else by session finish.
+  const key = (t) => (t.avgPlace ?? 99) * 100 + (t.avgSessionPlace ?? 99);
+  const players = [...byPlayer.entries()].map(([pid, ts]) => ({
+    profile_id: pid,
+    name: names.get(pid) ?? 'Unknown',
+    tracks: ts.sort((a, b) => key(a) - key(b) || b.plays - a.plays),
+  })).sort((a, b) => a.name.localeCompare(b.name));
+  return { overall, players, trackCount: overall.length, plays: overall.reduce((s, t) => s + t.plays, 0) };
+}
+
 // Head-to-head between two members.
 export function headToHead(gps, aId, bId) {
   const res = { gps: 0, aWins: 0, bWins: 0, ties: 0, avgMargin: null, races: 0, aRaceWins: 0, bRaceWins: 0 };

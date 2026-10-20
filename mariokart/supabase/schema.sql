@@ -331,8 +331,17 @@ begin
       v_totals := v_totals || jsonb_build_object(v_key, v_total);
     end loop;
   else
-    if jsonb_array_length(v_races) <> 0 then
-      raise exception 'final total mode must not include race results';
+    -- Final totals may still record which tracks were played (no placements).
+    if exists (select 1 from jsonb_array_elements(v_races) r
+                where jsonb_array_length(coalesce(r -> 'results', '[]'::jsonb)) > 0) then
+      raise exception 'final total mode must not include race placements';
+    end if;
+    if exists (select 1 from jsonb_array_elements(v_races) r
+                where coalesce((r ->> 'race_number')::int, 0) not between 1 and 4
+                   or coalesce(trim(r ->> 'track'), '') = '')
+       or (select count(*) from jsonb_array_elements(v_races)) <>
+          (select count(distinct (r ->> 'race_number')::int) from jsonb_array_elements(v_races) r) then
+      raise exception 'tracks must be numbered 1-4, once each, with a track name';
     end if;
     for v_part in select * from jsonb_array_elements(v_parts) loop
       if (v_part ->> 'final_total') is null or (v_part ->> 'final_total') !~ '^\d+$'
@@ -377,6 +386,11 @@ begin
         values (v_race_id, (v_map ->> (v_res ->> 'key'))::uuid,
                 (v_res ->> 'placement')::int, public.mkw_points((v_res ->> 'placement')::int));
       end loop;
+    end loop;
+  else
+    for v_race in select * from jsonb_array_elements(v_races) loop
+      insert into public.races (gp_id, race_number, track)
+      values (p_gp_id, (v_race ->> 'race_number')::int, trim(v_race ->> 'track'));
     end loop;
   end if;
 
