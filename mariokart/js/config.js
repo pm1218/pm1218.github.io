@@ -7,4 +7,6 @@ export const CONFIG = {
   SUPABASE_URL: 'https://wjphmocgvrcrsisytzyo.supabase.co',
   SUPABASE_ANON_KEY: 'sb_publishable_Htl-9kW8fTNr2XD2Upwrgw_HHNWtagS',
   APP_NAME: 'Kart Club',
+  // Where login links in emails point.
+  APP_URL: 'https://prateekm.me/mariokart/',
 };

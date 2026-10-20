@@ -9,7 +9,7 @@ import { planScreen, finishScreen, isolateDigits, decodeDescending, pointsCandid
 import { suggestIdentities } from '../js/identity.js';
 import {
   emptyDraft, makeParticipant, validateDraft, computeStandings, toPayload,
-  draftFromScreens, completedRaceCount, racePlacementOf,
+  draftFromScreens, completedRaceCount, racePlacementOf, addExtraAsPlayer,
 } from '../js/scoring.js';
 import { powerRankings, eloRatings, consistencyMetrics, trackStats, headToHead, insights, fullReport } from '../js/analytics.js';
 import { profiles, gps } from './sample-data.mjs';
@@ -125,11 +125,11 @@ test('identity suggestion: Mii name, then favourite character on a player bar', 
 });
 
 function threeKartDraft() {
-  const d = emptyDraft('Mushroom');
+  const d = emptyDraft();
   d.participants = [
     makeParticipant({ key: 'a', profile_id: 'u-pm', label: 'Prateek' }),
     makeParticipant({ key: 'b', profile_id: 'u-an', label: 'Anya' }),
-    makeParticipant({ key: 'c', label: 'Mario', is_cpu: true }),
+    makeParticipant({ key: 'c', label: 'Guest' }),
   ];
   return d;
 }
@@ -147,7 +147,7 @@ test('4-race rule: fewer than 4 complete races is rejected', () => {
   d.races[3].results = { a: 2, b: 1, c: 3 };
   assert.equal(validateDraft(d).ok, true);
   const st = computeStandings(d);
-  assert.deepEqual(st.map((r) => [r.label, r.total, r.place]), [['Prateek', 15 + 12 + 15 + 12, 1], ['Anya', 12 + 15 + 10 + 15, 2], ['Mario', 10 + 10 + 12 + 10, 3]]);
+  assert.deepEqual(st.map((r) => [r.label, r.total, r.place]), [['Prateek', 15 + 12 + 15 + 12, 1], ['Anya', 12 + 15 + 10 + 15, 2], ['Guest', 10 + 10 + 12 + 10, 3]]);
   const payload = toPayload(d);
   assert.equal(payload.races.length, 4);
   assert.deepEqual(payload.races[0].results, [{ key: 'a', placement: 1 }, { key: 'b', placement: 2 }, { key: 'c', placement: 3 }]);
@@ -176,7 +176,7 @@ test('final total mode: totals 0-60, ties share a place', () => {
 test('photo normalisation: 3 after-race screens are refused with a pointer to final totals', () => {
   const race = readFixture(fixture('5428'));
   assert.throws(
-    () => draftFromScreens({ screens: [race, race, race], identities: [], profiles, cup: 'Mushroom' }),
+    () => draftFromScreens({ screens: [race, race, race], identities: [], profiles }),
     (e) => e.code === 'INCOMPLETE_RACES' && /final results/.test(e.message),
   );
 });
@@ -184,26 +184,31 @@ test('photo normalisation: 3 after-race screens are refused with a pointer to fi
 test('photo normalisation: 4 after-race screens → race-mode draft with computed totals', () => {
   const race = readFixture(fixture('5428'));
   const ids = suggestIdentities(race.rows, profiles);
-  const { draft } = draftFromScreens({ screens: [race, race, race, race], identities: ids, profiles, cup: 'Mushroom' });
+  const { draft, extras } = draftFromScreens({ screens: [race, race, race, race], identities: ids, profiles });
   assert.equal(draft.mode, 'races');
   assert.equal(draft.source, 'photo_races');
-  assert.equal(draft.races[0].track, 'Luigi Circuit');
-  const named = draft.participants.filter((p) => p.ocr_name);
-  assert.ok(named.length >= 10);
+  assert.equal(draft.races[0].track, '', 'VS tracks are random: left for the uploader');
+  assert.ok(draft.participants.every((p) => !p.is_cpu), 'only players are kept');
+  assert.equal(draft.participants.length + extras.length, 12);
   const st = computeStandings(draft);
   assert.equal(st[0].total, 60, 'first in all four races');
+  // A player the reader mistook for a CPU can be added back with all 4 placements.
+  const x = extras.find((e) => e.places.every(Boolean));
+  addExtraAsPlayer(draft, x);
+  assert.ok(draft.races.every((r) => r.results[x.key]));
 });
 
-test('photo normalisation: final results → total-mode draft; CPUs and players split', () => {
+test('photo normalisation: final results → only the players, CPUs set aside', () => {
   const fin = readFixture(fixture('7316'));
   const ids = suggestIdentities(fin.rows, profiles);
-  const { draft } = draftFromScreens({ screens: [fin], identities: ids, profiles, cup: 'Star' });
+  const { draft, extras } = draftFromScreens({ screens: [fin], identities: ids, profiles });
   assert.equal(draft.mode, 'total');
-  assert.equal(draft.participants.length, 12);
-  assert.equal(draft.participants[3].character, 'Yoshi');
-  assert.equal(draft.participants[3].profile_id, 'u-pm', 'Yoshi on a player bar → a Yoshi fan');
-  assert.ok(draft.participants.filter((p) => p.is_cpu).length >= 7);
-  assert.throws(() => draftFromScreens({ screens: [fin, readFixture(fixture('5428'))], identities: [], profiles, cup: 'Star' }), /Mixing screens/);
+  assert.deepEqual(draft.participants.map((p) => p.ocr_name), ['Mario', 'Diddy Kong', 'Yoshi', 'Waluigi'], 'the 4 players on 7316');
+  const yoshi = draft.participants.find((p) => p.character === 'Yoshi');
+  assert.equal(yoshi.profile_id, 'u-pm', 'Yoshi on a player bar → the Yoshi fan');
+  assert.equal(yoshi.final_total, 36);
+  assert.equal(extras.length, 8);
+  assert.throws(() => draftFromScreens({ screens: [fin, readFixture(fixture('5428'))], identities: [], profiles }), /Mixing screens/);
 });
 
 test('analytics: power, elo, consistency, tracks, head-to-head', () => {

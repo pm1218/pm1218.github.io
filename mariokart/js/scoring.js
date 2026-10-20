@@ -15,19 +15,19 @@
 // explain problems before the server rejects them; the server stays the
 // authority and recomputes all points itself.
 
-import { CUPS, MAX_GP_TOTAL, MAX_PLAYERS, POINTS, RACES_PER_GP, pointsFor } from './data.js';
+import { MAX_GP_TOTAL, MAX_PLAYERS, POINTS, RACES_PER_GP, pointsFor } from './data.js';
 import { similarity } from './text.js';
 
 let keySeq = 0;
 export const newKey = () => `k${Date.now().toString(36)}${(keySeq++).toString(36)}`;
 
-export function emptyDraft(cup) {
-  const tracks = CUPS[cup] || ['', '', '', ''];
+// VS sessions: 4 races on random tracks, so tracks start blank (optional).
+export function emptyDraft() {
   return {
     mode: 'total',
     source: 'manual_total',
     participants: [],
-    races: Array.from({ length: RACES_PER_GP }, (_, i) => ({ race_number: i + 1, track: tracks[i], results: {} })),
+    races: Array.from({ length: RACES_PER_GP }, (_, i) => ({ race_number: i + 1, track: '', results: {} })),
     image_paths: [],
     ocr_raw: null,
   };
@@ -50,7 +50,7 @@ export function isRaceComplete(race, participants) {
   if (!race || !participants.length) return false;
   const places = participants.map((p) => race.results[p.key]);
   if (places.some((x) => !Number.isInteger(x) || x < 1 || x > MAX_PLAYERS)) return false;
-  return new Set(places).size === places.length && Boolean(String(race.track || '').trim());
+  return new Set(places).size === places.length;
 }
 
 export function completedRaceCount(draft) {
@@ -63,6 +63,7 @@ export function validateDraft(draft) {
   if (ps.length < 2) errors.push('Add at least 2 karts.');
   if (ps.length > MAX_PLAYERS) errors.push(`A Grand Prix has at most ${MAX_PLAYERS} karts.`);
   if (ps.some((p) => !String(p.label || '').trim())) errors.push('Every kart needs a name.');
+  if (ps.some((p) => p.is_cpu)) errors.push('CPU players are not tracked — remove them.');
   const linked = ps.filter((p) => p.profile_id);
   if (!linked.length) errors.push('Link at least one kart to a group member.');
   if (new Set(linked.map((p) => p.profile_id)).size !== linked.length) {
@@ -127,7 +128,7 @@ export function toPayload(draft) {
     races: draft.mode === 'races'
       ? draft.races.map((r) => ({
           race_number: r.race_number,
-          track: r.track.trim(),
+          track: String(r.track || '').trim() || null,
           results: draft.participants.map((p) => ({ key: p.key, placement: r.results[p.key] })),
         }))
       : [],
@@ -155,10 +156,11 @@ function participantsFromRows(rows, identities, profilesById) {
     const read = row.name || `Kart ${row.place}`;
     return makeParticipant({
       profile_id: id.profile_id || null,
-      label: profile ? profile.display_name : id.is_cpu ? (row.character || read) : read,
+      label: profile ? profile.display_name : read,
       character: row.character || null,
       is_cpu: Boolean(id.is_cpu),
       ocr_name: row.name,
+      row_index: i,
       suggestion: id,
     });
   });
@@ -176,9 +178,15 @@ export function racePlacementOf(row) {
 const isTotals = (s) => s.kind === 'final' || (s.kind === 'standings' && s.phase === 'totals');
 const isRace = (s) => s.kind === 'standings' && s.phase === 'race';
 
-export function draftFromScreens({ screens, identities, profiles, cup }) {
+/**
+ * Photo screens → draft. Only players are tracked: rows identified as CPUs
+ * are left out of the draft and returned as `extras`, so the uploader can
+ * add one back if the photo reader mistook a player for a CPU.
+ * Returns { draft, issues, extras: [{ key, name, character, place, final_total | places[] }] }.
+ */
+export function draftFromScreens({ screens, identities, profiles }) {
   const profilesById = new Map(profiles.map((p) => [p.id, p]));
-  const draft = emptyDraft(cup);
+  const draft = emptyDraft();
   const issues = [];
   if (!screens.length) throw new Error('Add a photo first.');
   if (screens.some((s) => s.kind === 'unknown')) {
@@ -187,60 +195,79 @@ export function draftFromScreens({ screens, identities, profiles, cup }) {
 
   const races = screens.filter(isRace);
   const totals = screens.filter(isTotals);
-
   if (races.length && races.length !== screens.length) {
     throw new Error('Mixing screens: upload either the final results, or the four after-race screens (the ones showing +points).');
   }
 
+  let candidates;
   if (!races.length) {
     if (totals.length !== 1) throw new Error('Upload a single final results photo.');
     const base = totals[0];
     draft.mode = 'total';
     draft.source = 'photo_total';
-    draft.participants = participantsFromRows(base.rows, identities, profilesById);
+    candidates = participantsFromRows(base.rows, identities, profilesById);
     base.rows.forEach((row, i) => {
-      draft.participants[i].final_total = Number.isInteger(row.points) && row.points <= MAX_GP_TOTAL ? row.points : null;
-      if (Number.isInteger(row.points) && row.points > MAX_GP_TOTAL) issues.push(`${row.name || `Row ${row.place}`} shows ${row.points} points — more than one Grand Prix's worth. Enter the GP total.`);
-    });
-    return { draft, issues };
-  }
-
-  if (races.length !== RACES_PER_GP) {
-    const err = new Error(
-      `Race-by-race upload needs all ${RACES_PER_GP} after-race screens; got ${races.length}. ` +
-        'Upload the final results photo (or type the final totals) instead.',
-    );
-    err.code = 'INCOMPLETE_RACES';
-    throw err;
-  }
-
-  draft.mode = 'races';
-  draft.source = 'photo_races';
-  const base = races[0];
-  draft.participants = participantsFromRows(base.rows, identities, profilesById);
-
-  races.forEach((screen, ri) => {
-    const results = {};
-    const used = new Set();
-    for (const row of screen.rows) {
-      // Same kart across photos: the character/Mii name is shown on every screen.
-      let best = null;
-      draft.participants.forEach((p) => {
-        if (used.has(p.key)) return;
-        const sim = row.name && p.ocr_name ? similarity(row.name, p.ocr_name) : 0;
-        if (!best || sim > best.s) best = { p, s: sim };
-      });
-      if (!best || best.s < 0.75) {
-        issues.push(`Race ${ri + 1}: couldn't match "${row.name ?? `row ${row.place}`}" to a kart from race 1 — set its place by hand.`);
-        continue;
+      candidates[i].place = row.place;
+      candidates[i].final_total = Number.isInteger(row.points) && row.points <= MAX_GP_TOTAL ? row.points : null;
+      if (Number.isInteger(row.points) && row.points > MAX_GP_TOTAL && !candidates[i].is_cpu) {
+        issues.push(`${candidates[i].label} shows ${row.points} points — more than 4 races' worth. Enter the total for these 4 races.`);
       }
-      used.add(best.p.key);
-      results[best.p.key] = racePlacementOf(row);
+    });
+  } else {
+    if (races.length !== RACES_PER_GP) {
+      const err = new Error(
+        `Race-by-race upload needs all ${RACES_PER_GP} after-race screens; got ${races.length}. ` +
+          'Upload the final results photo (or type the final totals) instead.',
+      );
+      err.code = 'INCOMPLETE_RACES';
+      throw err;
     }
-    draft.races[ri].results = results;
-    if (!isRaceComplete(draft.races[ri], draft.participants)) {
-      issues.push(`Race ${ri + 1} is missing placements — fill them in before confirming.`);
-    }
-  });
-  return { draft, issues };
+    draft.mode = 'races';
+    draft.source = 'photo_races';
+    const base = races[0];
+    candidates = participantsFromRows(base.rows, identities, profilesById);
+    base.rows.forEach((row, i) => { candidates[i].place = row.place; candidates[i].places = [null, null, null, null]; });
+    races.forEach((screen, ri) => {
+      const used = new Set();
+      for (const row of screen.rows) {
+        // Same kart across photos: the character/Mii name is on every screen.
+        let best = null;
+        candidates.forEach((p) => {
+          if (used.has(p.key)) return;
+          const sim = row.name && p.ocr_name ? similarity(row.name, p.ocr_name) : 0;
+          if (!best || sim > best.s) best = { p, s: sim };
+        });
+        if (!best || best.s < 0.75) continue;
+        used.add(best.p.key);
+        best.p.places[ri] = racePlacementOf(row);
+      }
+    });
+  }
+
+  const players = candidates.filter((p) => !p.is_cpu);
+  const extras = candidates.filter((p) => p.is_cpu).map((p) => ({
+    key: p.key, name: p.ocr_name, character: p.character, place: p.place, row_index: p.row_index,
+    ...(draft.mode === 'total' ? { final_total: p.final_total } : { places: p.places }),
+  }));
+  draft.participants = players.map(({ place, places, ...p }) => p);
+  if (draft.mode === 'races') {
+    draft.races.forEach((r, ri) => {
+      r.results = {};
+      for (const p of players) if (p.places[ri]) r.results[p.key] = p.places[ri];
+      if (!isRaceComplete(r, draft.participants)) issues.push(`Race ${ri + 1} is missing a placement for a player — fill it in before confirming.`);
+    });
+  }
+  if (!players.length) issues.push('No players were spotted on the photo — add them from the list of rows below.');
+  return { draft, issues, extras };
+}
+
+/** Add a row the photo reader called a CPU back in as a player. */
+export function addExtraAsPlayer(draft, extra) {
+  const p = makeParticipant({ key: extra.key, label: extra.name || `Kart ${extra.place}`, character: extra.character || null, ocr_name: extra.name, row_index: extra.row_index });
+  if (draft.mode === 'total') p.final_total = extra.final_total ?? null;
+  draft.participants.push(p);
+  if (draft.mode === 'races' && extra.places) {
+    extra.places.forEach((place, ri) => { if (place) draft.races[ri].results[p.key] = place; });
+  }
+  return p;
 }

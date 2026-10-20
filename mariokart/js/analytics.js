@@ -4,8 +4,9 @@
 //            participants: [{ id, profile_id, label, character, is_cpu, final_total, final_place }],
 //            races: [{ race_number, track, results: [{ participant_id, placement, points }] }] }]
 //
-// Only karts linked to a member (profile_id) are ranked; CPUs and guests
-// still count toward field size, so beating a full field is worth more.
+// Only players linked to a member (profile_id) are ranked. Sessions store
+// players only (no CPUs), so GP places are among the players; race
+// placements stay out of 12 karts.
 
 import { MAX_GP_TOTAL } from './data.js';
 
@@ -142,7 +143,8 @@ export function raceRecords(gps) {
       for (const res of race.results) {
         const p = byId.get(res.participant_id);
         if (!p?.profile_id) continue;
-        out.push({ profile_id: p.profile_id, gp_id: gp.id, race_number: race.race_number, track: race.track, placement: res.placement, points: res.points, field: gp.participants.length });
+        // Race placements are out of all 12 karts (CPUs race but aren't tracked).
+        out.push({ profile_id: p.profile_id, gp_id: gp.id, race_number: race.race_number, track: race.track || null, placement: res.placement, points: res.points, field: 12 });
       }
     }
   }
@@ -199,6 +201,7 @@ export function trackStats(gps, profiles) {
   const names = new Map(profiles.map((p) => [p.id, p.display_name]));
   const agg = new Map();
   for (const r of raceRecords(gps)) {
+    if (!r.track) continue; // VS tracks are optional
     const key = `${r.profile_id}|${r.track}`;
     if (!agg.has(key)) agg.set(key, { profile_id: r.profile_id, track: r.track, places: [], points: [] });
     agg.get(key).places.push(r.placement);

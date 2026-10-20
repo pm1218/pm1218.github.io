@@ -33,7 +33,8 @@ mariokart/
 3. **Mario Kart Wii rules:** a Grand Prix is exactly 4 races; 12 karts; race points 15-12-10-8-7-6-5-4-3-2-1-0; max GP total 60. Cups map to fixed track orders, so picking the cup pre-fills the 4 tracks.
 4. **Karts:** a GP can include members, guests and CPUs. Only members are ranked, but every entered kart counts toward field size. You may enter just the humans; placements still range over 1-12 (e.g. 1st, 5th, 9th) because CPUs finished in between.
 5. **Mario Kart Wii only.** Switch scores are a separate game and out of scope for now (a later project). Two Wii screens are read: the **after-race standings** (12 full-width bars; "+gained" while rows are in race order, then re-sorted by total) and the **final results** ("You got Nth place!", two columns of six). Each row shows the character's name (or a Mii name), its icon and the total; human players' rows have a coloured bar. Photos are phone shots of a TV: angled, glare, moiré, sometimes cropped.
-5a. **VS sessions vs Grand Prix:** your photos are "150cc VS" screens. A 4-race VS session scores exactly like a Grand Prix (max 60). Totals above 60 mean more than four races were played; the app flags those instead of storing them as one GP.
+5a. **VS mode, not cups:** the group plays **Versus** — 4 races on random tracks — so a session has no cup and tracks are optional per race (pick them if you want per-track stats). Scoring is the same 15-12-10-8-…-0 table (max 60 over 4 races). Totals above 60 mean more than four races were played; the app flags those.
+5b. **Players only:** typically 4 players are tracked (members, or guests). CPUs race but are **not stored**: the photo reader drops rows without a player bar (listing them so a missed player can be added back), manual entry has no CPU option, and `submit_grand_prix` rejects CPU rows. Race placements are still out of all 12 karts so points match the game; session places are among the players.
 6. **Character icons are not shipped.** Nintendo artwork isn't redistributable. On the Wii the character's name is printed on the row, so the character comes from the text; icons are only needed for rows showing a Mii name, and that matcher **learns from your own confirmed photos** (each confirmed GP saves its icon crops as labelled templates).
 7. **Login:** an 8-digit email code (OTP). Supabase Auth handles code generation, single use and expiry (set to 600 s = 10 min).
 8. **Email:** any SMTP account you own (e.g. Gmail with an app password, ~500 mails/day free). Supabase Edge Functions block ports 25/587, so port **465** is used.
@@ -269,6 +270,8 @@ All code is in this folder — no placeholders. The only values you supply are y
    (Run from the `mariokart/` folder so the CLI finds `supabase/functions/`.)
 4. **Frontend** — put the project URL and anon key (Project Settings → API) in `js/config.js`, commit, push. GitHub Pages publishes `https://prateekm.me/mariokart/` within a minute.
 5. **Add members** in the Admin tab. Everyone sets a Mii name + favourite character on the *Me* tab so photo suggestions work.
+
+**Upgrading an existing database** (cups → VS mode): re-run the whole `supabase/schema.sql` in the SQL editor. It is idempotent: it makes `cup` and `track` optional, adds the no-CPU rule to `submit_grand_prix`, and keeps all existing data.
 
 **Tests**: `npm test` (Node 20+) runs 16 unit tests, including accuracy on the 17 real-photo fixtures; `supabase/schema.sql` was verified against PostgreSQL 16 (whitelist trigger, RLS, 4-race rule, ties, last-admin guard); `tests/browser/smoke.py` drives the whole UI at phone size with Playwright against an in-memory Supabase mock; open `/mariokart/tests/browser/vision-check.html` to run the photo reader in your own browser.
 

@@ -5,12 +5,12 @@
 import { CONFIG } from './config.js';
 import * as api from './api.js';
 import {
-  CHARACTERS, CUP_NAMES, CUPS, ALL_TRACKS, ENGINE_CLASSES, EVENT_KINDS, MAX_PLAYERS,
+  CHARACTERS, ALL_TRACKS, ENGINE_CLASSES, EVENT_KINDS, MAX_PLAYERS,
   MAX_GP_TOTAL, RACES_PER_GP, ordinal, pointsFor,
 } from './data.js';
 import {
   emptyDraft, makeParticipant, validateDraft, computeStandings, toPayload,
-  completedRaceCount, isRaceComplete, draftFromScreens,
+  completedRaceCount, isRaceComplete, draftFromScreens, addExtraAsPlayer,
 } from './scoring.js';
 import { suggestIdentities } from './identity.js';
 import {
@@ -104,7 +104,7 @@ function viewLogin() {
       setTimeout(() => input.focus(), 50);
     }
   };
-  clear(view).append(h('div', { class: 'hero' }, h('div', { class: 'hero-mark', 'aria-hidden': 'true' }, '🏆'), h('h1', {}, CONFIG.APP_NAME), h('p', { class: 'muted' }, 'Mario Kart Wii Grand Prix scores for the group.')), box);
+  clear(view).append(h('div', { class: 'hero' }, h('div', { class: 'hero-mark', 'aria-hidden': 'true' }, '🏆'), h('h1', {}, CONFIG.APP_NAME), h('p', { class: 'muted' }, 'Mario Kart Wii VS scores for the group.')), box);
   draw();
 }
 
@@ -119,7 +119,7 @@ async function viewEvents() {
         return h('a', { class: 'list-item', href: `#/events/${e.id}` },
           h('div', {}, h('div', { class: 'li-title' }, e.name),
             h('div', { class: 'li-sub' }, [e.kind, e.location, fmtDate(e.starts_on)].filter(Boolean).join(' · '))),
-          h('span', { class: 'pill' }, `${confirmed}/${e.grand_prix.length} GP`));
+          h('span', { class: 'pill' }, `${confirmed}/${e.grand_prix.length} VS`));
       }))
     : emptyState('No events yet', 'Create one for your next session, weekend or trip.');
   page('Events', form, list);
@@ -153,14 +153,14 @@ async function viewEvent(id) {
   const [ev, gps] = await Promise.all([api.getEvent(id), api.listGps(id)]);
   const confirmed = gps.filter((g) => g.status === 'confirmed');
 
-  const cup = selectEl(CUP_NAMES.map((c) => ({ value: c, label: `${c} Cup` })), CUP_NAMES[gps.length % CUP_NAMES.length], { id: 'gp-cup' });
   const cls = selectEl(ENGINE_CLASSES, '150cc', { id: 'gp-class' });
-  const btn = h('button', { class: 'btn primary block', type: 'submit' }, '+ Add Grand Prix');
+  const btn = h('button', { class: 'btn primary block', type: 'submit' }, '+ New VS session (4 races)');
   const form = h('form', { class: 'card' },
-    h('div', { class: 'grid-2' }, h('div', {}, h('label', { for: 'gp-cup' }, 'Cup'), cup), h('div', {}, h('label', { for: 'gp-class' }, 'Class'), cls)),
+    h('label', { for: 'gp-class' }, 'Class'), cls,
+    h('p', { class: 'muted small' }, 'Versus mode: 4 races on random tracks. Only the players are tracked, not CPUs.'),
     btn);
   form.addEventListener('submit', busy(btn, async () => {
-    const gp = await api.createGp({ event_id: id, cup: cup.value, engine_class: cls.value });
+    const gp = await api.createGp({ event_id: id, engine_class: cls.value });
     go(`#/gp/${gp.id}`);
   }));
 
@@ -169,13 +169,13 @@ async function viewEvent(id) {
         const winner = g.participants.find((p) => p.final_place === 1);
         return h('a', { class: 'list-item', href: `#/gp/${g.id}` },
           h('div', {},
-            h('div', { class: 'li-title' }, `GP ${g.seq} · ${g.cup} Cup`),
+            h('div', { class: 'li-title' }, gpTitle(g)),
             h('div', { class: 'li-sub' }, g.status === 'confirmed'
               ? `${g.engine_class} · 🏆 ${winner ? winner.label : '—'} ${winner ? `(${winner.final_total})` : ''}`
               : `${g.engine_class} · waiting for scores`)),
           h('span', { class: `pill ${g.status === 'confirmed' ? 'ok' : 'warn'}` }, g.status === 'confirmed' ? 'Confirmed' : 'Draft'));
       }))
-    : emptyState('No Grand Prix yet', 'Add one, race, then upload the scores.');
+    : emptyState('No VS sessions yet', 'Start one, race 4 times, then upload the scores.');
 
   const standings = confirmed.length
     ? h('section', {}, h('h2', {}, 'Event power rankings'), powerTable(powerRankings(confirmed, state.profiles)),
@@ -185,7 +185,7 @@ async function viewEvent(id) {
   const canDelete = ev.created_by === state.me.profile.id || state.me.isAdmin;
   const del = canDelete ? h('button', { class: 'btn danger-link' }, 'Delete event') : null;
   if (del) del.addEventListener('click', busy(del, async () => {
-    if (!confirm(`Delete "${ev.name}" and all of its Grand Prix? This cannot be undone.`)) return;
+    if (!confirm(`Delete "${ev.name}" and all of its VS sessions? This cannot be undone.`)) return;
     await api.deleteEvent(id);
     toast('Event deleted');
     go('#/events');
@@ -193,29 +193,29 @@ async function viewEvent(id) {
 
   page(ev.name,
     h('p', { class: 'muted' }, [ev.kind, ev.location, fmtDate(ev.starts_on)].filter(Boolean).join(' · ')),
-    standings, h('h2', {}, 'Grand Prix'), gpList, form, del);
+    standings, h('h2', {}, 'VS sessions'), gpList, form, del);
 }
 
 // ======================================================================= GP
 async function viewGp(id) {
-  page('Grand Prix', spinner());
+  page('VS session', spinner());
   const gp = await api.getGp(id);
   if (gp.status !== 'confirmed') return viewGpEntry(gp);
 
-  const title = `GP ${gp.seq} · ${gp.cup} Cup`;
+  const title = gpTitle(gp);
   const parts = gp.participants;
-  const results = table(['', 'Kart', 'Char', 'Pts'], parts.map((p) => [
-    medal(p.final_place), h('span', {}, p.profile_id ? h('strong', {}, p.label) : p.label, p.is_cpu ? h('span', { class: 'tag' }, 'CPU') : null),
+  const results = table(['', 'Player', 'Char', 'Pts'], parts.map((p) => [
+    medal(p.final_place), h('span', {}, p.profile_id ? h('strong', {}, p.label) : p.label, p.is_cpu ? h('span', { class: 'tag' }, 'CPU') : null, !p.profile_id && !p.is_cpu ? h('span', { class: 'tag' }, 'guest') : null),
     charBadge(p.character), h('strong', {}, p.final_total)]), { stickyFirst: false, cls: 'results' });
 
   let raceTable = null;
   if (gp.entry_mode === 'races') {
     raceTable = h('section', {}, h('h2', {}, 'Race by race'),
-      table(['Kart', ...gp.races.map((r) => `R${r.race_number}`), 'Total'], parts.map((p) => [
+      table(['Player', ...gp.races.map((r) => `R${r.race_number}`), 'Total'], parts.map((p) => [
         p.label,
         ...gp.races.map((r) => { const x = r.results.find((q) => q.participant_id === p.id); return x ? `${ordinal(x.placement)} · ${x.points}` : '—'; }),
         h('strong', {}, p.final_total)])),
-      h('ol', { class: 'track-list' }, gp.races.map((r) => h('li', {}, r.track))));
+      gp.races.some((r) => r.track) ? h('ol', { class: 'track-list' }, gp.races.map((r) => h('li', {}, r.track || 'track not recorded'))) : null);
   }
 
   const photoPaths = gp.uploads.flatMap((u) => u.image_paths);
@@ -233,7 +233,7 @@ async function viewGp(id) {
   if (state.me.isAdmin) {
     const b = h('button', { class: 'btn danger-link' }, 'Reopen for correction (admin)');
     b.addEventListener('click', busy(b, async () => {
-      if (!confirm('Reopen this Grand Prix? Its results are removed until it is confirmed again.')) return;
+      if (!confirm('Reopen this VS session? Its results are removed until it is confirmed again.')) return;
       await api.reopenGp(gp.id); toast('Reopened'); viewGp(id);
     }));
     actions.append(b);
@@ -244,19 +244,21 @@ async function viewGp(id) {
     results, raceTable, photoPaths.length ? h('section', {}, h('h2', {}, 'Photos'), photos) : null, actions);
 }
 
+const gpTitle = (g) => `VS ${g.seq}${g.cup ? ` · ${g.cup} Cup` : ''}`;
 const medal = (place) => h('span', { class: `place place-${place}` }, place <= 3 ? ['🥇', '🥈', '🥉'][place - 1] : ordinal(place));
 
 // --------------------------------------------------------- score entry view
 function viewGpEntry(gp) {
   const key = `mk-draft-${gp.id}`;
   const saved = store.get(key);
-  let draft = saved?.draft || emptyDraft(gp.cup);
+  let draft = saved?.draft || emptyDraft();
+  let extras = saved?.extras || [];
   let tab = saved?.tab || 'total';
   let raceTab = 0;
   const icons = new Map(); // participant key → icon canvas (from photo analysis)
   const photo = { kind: 'final', files: [null, null, null, null], analysis: null, colorCanvases: [] };
 
-  const persist = () => store.set(key, { draft, tab });
+  const persist = () => store.set(key, { draft, tab, extras });
   const body = h('div', {});
   const summary = h('div', { class: 'summary', 'aria-live': 'polite' });
 
@@ -283,13 +285,12 @@ function viewGpEntry(gp) {
       const who = selectEl([
         ...members.map((m) => ({ value: m.id, label: m.display_name, disabled: used.has(m.id) && m.id !== p.profile_id })),
         { value: '__guest', label: 'Guest (not a member)' },
-        { value: '__cpu', label: 'CPU' },
-      ], p.profile_id || (p.is_cpu ? '__cpu' : '__guest'), { 'aria-label': `Kart ${i + 1} driver` });
+      ], p.profile_id || '__guest', { 'aria-label': `Player ${i + 1}` });
       who.addEventListener('change', () => {
         const v = who.value;
-        if (v === '__cpu' || v === '__guest') {
-          p.profile_id = null; p.is_cpu = v === '__cpu';
-          if (!p.label || members.some((m) => m.display_name === p.label)) p.label = p.is_cpu ? (p.character || 'CPU') : 'Guest';
+        if (v === '__guest') {
+          p.profile_id = null; p.is_cpu = false;
+          if (!p.label || members.some((m) => m.display_name === p.label)) p.label = 'Guest';
         } else {
           const m = members.find((x) => x.id === v);
           p.profile_id = v; p.is_cpu = false; p.label = m.display_name;
@@ -321,16 +322,31 @@ function viewGpEntry(gp) {
         ? makeParticipant({ profile_id: m.id, label: m.display_name, character: m.favorite_character })
         : makeParticipant({ label: 'Guest' }));
       persist(); render();
-    } }, '+ Member');
-    const addCpu = h('button', { type: 'button', class: 'btn', onclick: () => { draft.participants.push(makeParticipant({ label: 'CPU', is_cpu: true })); persist(); render(); } }, '+ CPU');
+    } }, '+ Player');
     const addAll = h('button', { type: 'button', class: 'btn', onclick: () => {
       members.filter((m) => !used.has(m.id)).slice(0, MAX_PLAYERS - draft.participants.length)
         .forEach((m) => draft.participants.push(makeParticipant({ profile_id: m.id, label: m.display_name, character: m.favorite_character })));
       persist(); render();
-    } }, 'Add everyone');
+    } }, 'Add all members');
     const full = draft.participants.length >= MAX_PLAYERS;
-    [addMember, addCpu, addAll].forEach((b) => { b.disabled = full; });
-    return h('section', {}, h('h2', {}, `Karts (${draft.participants.length})`), rows.length ? rows : h('p', { class: 'muted' }, 'Add who raced. Include CPUs if you want the full field.'), h('div', { class: 'btn-row' }, addMember, addCpu, addAll));
+    [addMember, addAll].forEach((b) => { b.disabled = full; });
+    // Rows the photo reader judged to be CPUs: one tap adds a missed player back.
+    const cpuRows = extras.length
+      ? h('details', { class: 'card tight' },
+          h('summary', {}, `Rows read as CPUs (${extras.length}) — not tracked`),
+          h('p', { class: 'muted small' }, 'If one of these was actually a player, add it.'),
+          h('div', { class: 'list' }, extras.map((x) => {
+            const b = h('button', { type: 'button', class: 'btn small' }, 'Add as player');
+            b.addEventListener('click', () => {
+              addExtraAsPlayer(draft, x);
+              extras = extras.filter((e) => e.key !== x.key);
+              persist(); render();
+            });
+            const detail = draft.mode === 'races' ? (x.places || []).map((pl) => (pl ? ordinal(pl) : '—')).join(' · ') : `${x.final_total ?? '—'} pts`;
+            return h('div', { class: 'list-item static' }, h('div', {}, h('div', { class: 'li-title' }, `${ordinal(x.place)} · ${x.name || 'unread'}`), h('div', { class: 'li-sub' }, detail)), b);
+          })))
+      : null;
+    return h('section', {}, h('h2', {}, `Players (${draft.participants.length})`), rows.length ? rows : h('p', { class: 'muted' }, 'Add the players who raced (usually 4). CPUs aren\u2019t tracked.'), h('div', { class: 'btn-row' }, addMember, addAll), cpuRows);
   }
 
   // ---- final totals
@@ -350,21 +366,22 @@ function viewGpEntry(gp) {
     const n = draft.participants.length;
     const done = completedRaceCount(draft);
     const race = draft.races[raceTab];
-    const trackSel = selectEl([...new Set([...CUPS[gp.cup], ...ALL_TRACKS])], race.track, { 'aria-label': `Race ${raceTab + 1} track` });
+    const trackSel = selectEl([{ value: '', label: 'Track (optional)' }, ...ALL_TRACKS], race.track || '', { 'aria-label': `Race ${raceTab + 1} track` });
     trackSel.addEventListener('change', () => { race.track = trackSel.value; persist(); refresh(); });
     const taken = Object.values(race.results);
     const rows = draft.participants.map((p) => {
       const cur = race.results[p.key];
-      const sel = selectEl([{ value: '', label: '—' }, ...Array.from({ length: Math.max(n, 12) }, (_, i) => ({ value: i + 1, label: `${ordinal(i + 1)}${taken.includes(i + 1) && cur !== i + 1 ? ' (taken)' : ''} · ${pointsFor(i + 1)} pts` }))], cur ?? '', { 'aria-label': `${p.label} placement in race ${raceTab + 1}` });
+      const sel = selectEl([{ value: '', label: '—' }, ...Array.from({ length: 12 }, (_, i) => ({ value: i + 1, label: `${ordinal(i + 1)}${taken.includes(i + 1) && cur !== i + 1 ? ' (taken)' : ''} · ${pointsFor(i + 1)} pts` }))], cur ?? '', { 'aria-label': `${p.label} placement in race ${raceTab + 1}` });
       sel.addEventListener('change', () => { if (sel.value) race.results[p.key] = Number(sel.value); else delete race.results[p.key]; persist(); render(); });
       const dup = cur && taken.filter((x) => x === cur).length > 1;
       return h('label', { class: `total-row ${dup ? 'bad' : ''}` }, h('span', {}, p.label || 'Kart'), sel);
     });
     return h('section', {},
       h('h2', {}, 'Race results'),
+      h('p', { class: 'muted small' }, 'Each player\u2019s finishing place out of all 12 karts (CPUs included), so points match the game.'),
       h('div', { class: `banner ${done === RACES_PER_GP ? 'ok' : 'warn'}` },
         done === RACES_PER_GP
-          ? '✓ All 4 races complete — the GP total is calculated for you.'
+          ? '✓ All 4 races complete — totals are calculated for you.'
           : h('span', {}, `${done} of ${RACES_PER_GP} races complete. Race-by-race scores are only accepted with all 4 races. `,
               h('button', { type: 'button', class: 'btn link', onclick: () => setTab('total') }, 'Missing a race? Enter final totals instead.'))),
       h('div', { class: 'segmented small', role: 'tablist', 'aria-label': 'Race' }, draft.races.map((r, i) =>
@@ -387,7 +404,7 @@ function viewGpEntry(gp) {
       const input = h('input', { type: 'file', accept: 'image/*', id: `ph-${i}`, class: 'visually-hidden' });
       input.addEventListener('change', () => { photo.files[i] = input.files[0] || null; photo.analysis = null; render(); });
       const f = photo.files[i];
-      const label = photo.kind === 'final' ? '"You got … place!" results screen' : `After race ${i + 1} (${draft.races[i].track}) — the screen with +points`;
+      const label = photo.kind === 'final' ? '"You got … place!" results screen' : `After race ${i + 1} — the screen with +points`;
       return h('label', { class: `photo-slot ${f ? 'has' : ''}`, for: `ph-${i}` },
         f ? h('img', { src: URL.createObjectURL(f), alt: label }) : h('span', { class: 'slot-plus', 'aria-hidden': 'true' }, '+'),
         h('span', { class: 'slot-label' }, f ? `✓ ${label}` : `Take or choose: ${label}`), input);
@@ -414,9 +431,10 @@ function viewGpEntry(gp) {
       }
       const base = screens[0];
       const identities = suggestIdentities(base.rows, state.profiles);
-      const { draft: d, issues } = draftFromScreens({ screens, identities, profiles: state.profiles, cup: gp.cup });
+      const { draft: d, issues, extras: ex } = draftFromScreens({ screens, identities, profiles: state.profiles });
+      extras = ex;
       icons.clear();
-      d.participants.forEach((p, idx) => { if (base.rows[idx]?.iconCanvas) icons.set(p.key, base.rows[idx].iconCanvas); });
+      for (const p of [...d.participants, ...ex]) { const c = base.rows[p.row_index]?.iconCanvas; if (c) icons.set(p.key, c); }
       d.ocr_raw = {
         engine: base.engine,
         screens: screens.map((s) => ({ kind: s.kind, phase: s.phase, issues: s.issues, rows: s.rows.map(({ place, name, points, gained, human, character, characterConfidence, characterSource, confidence }) => ({ place, name, points, gained, human, character, characterConfidence, characterSource, confidence })) })),
@@ -426,7 +444,7 @@ function viewGpEntry(gp) {
       draft = d;
       tab = d.mode;
       persist();
-      toast(`Read ${base.rows.length} rows — check the karts below, then confirm.`);
+      toast(`Found ${d.participants.length} player${d.participants.length === 1 ? '' : 's'} — check them below, then confirm.`);
       render();
     }));
 
@@ -465,7 +483,7 @@ function viewGpEntry(gp) {
   const confirmBtn = h('button', { type: 'button', class: 'btn primary block big' }, 'Confirm & email everyone');
   confirmBtn.addEventListener('click', busy(confirmBtn, async () => {
     const payload = toPayload(draft);
-    if (!confirm(`Confirm GP ${gp.seq} (${draft.mode === 'races' ? '4 races' : 'final totals'}) and email the summary to every member?`)) return;
+    if (!confirm(`Confirm VS ${gp.seq} (${draft.mode === 'races' ? '4 races' : 'final totals'}) and email the summary to every member?`)) return;
     if (photo.analysis) {
       confirmBtn.textContent = 'Uploading photos…';
       const vision = await import('./vision.js');
@@ -485,7 +503,7 @@ function viewGpEntry(gp) {
       await api.sendSummary(gp.id);
       toast('Confirmed and emailed 🎉');
     } catch (e) {
-      toast(`Confirmed. ${e.message} — you can resend from the GP page.`, 'error');
+      toast(`Confirmed. ${e.message} — you can resend from the session page.`, 'error');
     }
     go(`#/gp/${gp.id}`);
   }));
@@ -495,7 +513,7 @@ function viewGpEntry(gp) {
     const standings = draft.participants.length ? computeStandings(draft) : [];
     clear(summary).append(...[
       h('h2', {}, 'Review'),
-      standings.length ? table(['', 'Kart', 'Total'], standings.map((r) => [medal(r.place), r.label || '—', h('strong', {}, r.total)]), { stickyFirst: false, cls: 'results' }) : null,
+      standings.length ? table(['', 'Player', 'Total'], standings.map((r) => [medal(r.place), r.label || '—', h('strong', {}, r.total)]), { stickyFirst: false, cls: 'results' }) : null,
       v.ok ? null : h('ul', { class: 'issues' }, v.errors.map((e) => h('li', {}, e))),
     ].filter(Boolean));
     confirmBtn.disabled = !v.ok || tab === 'photo';
@@ -516,13 +534,13 @@ function viewGpEntry(gp) {
   }
 
   const canDelete = gp.created_by === state.me.profile.id || state.me.isAdmin;
-  const del = canDelete ? h('button', { class: 'btn danger-link' }, 'Delete this draft GP') : null;
+  const del = canDelete ? h('button', { class: 'btn danger-link' }, 'Delete this draft session') : null;
   if (del) del.addEventListener('click', busy(del, async () => {
-    if (!confirm('Delete this Grand Prix?')) return;
+    if (!confirm('Delete this VS session?')) return;
     await api.deleteGp(gp.id); store.del(key); go(`#/events/${gp.event_id}`);
   }));
 
-  page(`GP ${gp.seq} · ${gp.cup} Cup`,
+  page(gpTitle(gp),
     h('p', { class: 'muted' }, h('a', { href: `#/events/${gp.event_id}` }, `← ${gp.events?.name ?? 'Event'}`), ` · ${gp.engine_class} · enter scores`),
     body, del);
   render();
@@ -547,7 +565,7 @@ async function viewStats(eventId) {
   const scope = selectEl([{ value: '', label: 'All time (lifetime)' }, ...events.map((e) => ({ value: e.id, label: e.name }))], eventId || '', { 'aria-label': 'Scope' });
   scope.addEventListener('change', () => go(scope.value ? `#/stats/${scope.value}` : '#/stats'));
   const header = h('div', { class: 'card tight' }, h('label', {}, 'Showing'), scope);
-  if (!gps.length) return page('Stats', header, emptyState('No confirmed Grand Prix yet', 'Stats appear once scores are confirmed.'));
+  if (!gps.length) return page('Stats', header, emptyState('No confirmed sessions yet', 'Stats appear once scores are confirmed.'));
 
   const P = state.profiles;
   const power = powerRankings(gps, P);
@@ -572,7 +590,7 @@ async function viewStats(eventId) {
           h('div', { class: 'h2h-score' }, h('span', {}, profileName(a)), h('strong', {}, `${r.aWins} – ${r.bWins}`), h('span', {}, profileName(b))),
           h('p', { class: 'muted small' }, `${r.gps} GPs together${r.ties ? `, ${r.ties} tied` : ''} · avg margin ${r.avgMargin > 0 ? '+' : ''}${r.avgMargin} pts for ${profileName(a)}`),
           r.races ? h('p', { class: 'muted small' }, `Races: ${r.aRaceWins} – ${r.bRaceWins} (${r.races} head-to-head races)`) : null)
-      : h('p', { class: 'muted' }, 'These two haven’t raced in the same GP yet.'));
+      : h('p', { class: 'muted' }, 'These two haven’t raced in the same session yet.'));
   };
   aSel.addEventListener('change', drawH2h); bSel.addEventListener('change', drawH2h); drawH2h();
 
@@ -588,11 +606,11 @@ async function viewStats(eventId) {
   const section = (title, note, ...content) => h('section', { class: 'card' }, h('h2', {}, title), note ? h('p', { class: 'muted small' }, note) : null, ...content);
 
   page('Stats', header,
-    h('p', { class: 'muted small' }, `${gps.length} confirmed GP${gps.length === 1 ? '' : 's'} · ${raceGps} with race-by-race detail`),
+    h('p', { class: 'muted small' }, `${gps.length} confirmed VS session${gps.length === 1 ? '' : 's'} · ${raceGps} with race-by-race detail`),
     section('Power rankings', 'Blend of points share (45%), finishing place vs. field (30%), win rate (15%) and recent form (10%), shrunk toward the group average for players with few GPs.', powerTable(power)),
-    section('Skill rating (Elo)', 'Every GP counts as head-to-head duels between members by final total. Starts at 1500.',
+    section('Skill rating (Elo)', 'Every session counts as head-to-head duels between players by final total. Starts at 1500.',
       table(['Player', 'Elo', 'GPs'], elo.map((r) => [`${r.rank}. ${r.name}`, h('strong', {}, r.elo), r.gps]))),
-    section('Consistency', 'Consistency 0-100: 100 = same place every race, 50 = as scattered as a random finisher. Volatility = average swing in GP total between consecutive GPs.',
+    section('Consistency', 'Consistency 0-100: 100 = same place every race, 50 = as scattered as a random finisher. Volatility = average swing in total between consecutive sessions.',
       table(['Player', 'Consistency', 'GP σ', 'CV', 'Volatility', 'Race σ'], cons.map((c) => [c.name, h('strong', {}, c.consistency ?? '—'), c.gpStdev ?? '—', c.cv ?? '—', c.volatility ?? '—', c.raceStdev ?? '—']))),
     section('Head to head', null, h('div', { class: 'grid-2' }, aSel, bSel), h2hOut,
       h('details', {}, h('summary', {}, 'Win % matrix (row vs column)'), h2hMatrixTable(h2hM))),
@@ -603,8 +621,8 @@ async function viewStats(eventId) {
         h('p', { class: 'warn-text small' }, '▼ ', p.worst.map((t) => `${t.track} (${t.avgPlace})`).join(', '))))) : h('p', { class: 'muted' }, 'No race-by-race data yet.'),
       tracks.trackKings.length ? h('details', {}, h('summary', {}, 'Track kings'), table(['Track', 'King', 'Avg place', 'Races'], tracks.trackKings.map((t) => [t.track, t.king, t.avgPlace, t.races]))) : null),
     section('Average placement per track', null, h('div', { class: 'card tight' }, trackPlayer), trackOut),
-    section('More insights', 'Clutch = race 4 avg placement minus races 1-3 (negative finishes strong). Comebacks = GP wins after 4th or worse in race 1.',
-      table(['Player', 'Best GP', '60s', 'Win streak', 'Clutch', 'Comebacks', 'Best character'], ins.map((x) => [x.name, x.bestGp, x.perfectGps, x.winStreak, x.clutch ?? '—', x.comebacks, x.characters[0] ? `${x.characters[0].character} (${x.characters[0].avgPts})` : '—']))));
+    section('More insights', 'Clutch = race 4 avg placement minus races 1-3 (negative finishes strong). Comebacks = session wins after 4th or worse (of 12) in race 1.',
+      table(['Player', 'Best session', '60s', 'Win streak', 'Clutch', 'Comebacks', 'Best character'], ins.map((x) => [x.name, x.bestGp, x.perfectGps, x.winStreak, x.clutch ?? '—', x.comebacks, x.characters[0] ? `${x.characters[0].character} (${x.characters[0].avgPts})` : '—']))));
 }
 
 function h2hMatrixTable(m) {

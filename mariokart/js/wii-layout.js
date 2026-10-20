@@ -645,7 +645,7 @@ export function finishScreen(plan, cellOcr, opts = {}) {
     if (r.points === null) issues.push(`Couldn't read the points for ${ordinalStr(r.place)}.`);
   });
   const top = rows.map((r) => r.points).filter((x) => x !== null);
-  if (top.some((x) => x > 60)) issues.push('Totals above 60 mean more than 4 races were played — this looks like a longer VS session, not a single Grand Prix.');
+  if (top.some((x) => x > 60)) issues.push('Totals above 60 mean more than 4 races were played — this looks like a longer VS session; enter the total for the 4 races.');
   return { kind: plan.kind, phase, rows, issues };
 }
 

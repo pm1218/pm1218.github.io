@@ -61,14 +61,16 @@ def run():
         page.get_by_role("button", name="Create event").click()
         expect(page.get_by_role("heading", name="Lake house weekend")).to_be_visible()
 
-        # --- GP 1: race by race, the 4-race rule
-        page.get_by_role("button", name="+ Add Grand Prix").click()
-        expect(page.get_by_role("heading", name=re.compile("GP 1"))).to_be_visible()
+        # --- VS 1: race by race, the 4-race rule, 4 players (3 members + a guest), no CPUs
+        page.get_by_role("button", name="+ New VS session (4 races)").click()
+        expect(page.get_by_role("heading", name="VS 1")).to_be_visible()
         page.get_by_role("tab", name="All 4 races").click()
-        page.get_by_role("button", name="Add everyone").click()
-        page.get_by_role("button", name="+ CPU").click()
-        orders = [[1, 2, 4, 3], [3, 1, 2, 4], [1, 3, 2, 4], [2, 1, 4, 3]]
-        names = ["Prateek", "Anya", "Dev", "CPU"]
+        expect(page.get_by_role("button", name="+ CPU")).to_have_count(0)
+        page.get_by_role("button", name="Add all members").click()
+        page.get_by_role("button", name="+ Player").click()
+        # placements are out of all 12 karts
+        orders = [[1, 2, 6, 9], [3, 1, 2, 11], [1, 3, 2, 7], [2, 1, 8, 12]]
+        names = ["Prateek", "Anya", "Dev", "Guest"]
         for ri, order in enumerate(orders[:3]):
             page.get_by_role("tab", name=re.compile(rf"^R{ri + 1}")).click()
             for name, place in zip(names, order):
@@ -96,9 +98,9 @@ def run():
 
         # --- GP 2: final totals only
         page.get_by_role("link", name=re.compile("Lake house weekend")).click()
-        page.get_by_role("button", name="+ Add Grand Prix").click()
+        page.get_by_role("button", name="+ New VS session (4 races)").click()
         page.get_by_role("tab", name="Final totals").click()
-        page.get_by_role("button", name="Add everyone").click()
+        page.get_by_role("button", name="Add all members").click()
         for name, total in [("Prateek", "41"), ("Anya", "50"), ("Dev", "61")]:
             page.get_by_label(f"{name} total").fill(total)
         expect(page.get_by_text("Dev needs a total from 0 to 60.")).to_be_visible()
@@ -110,7 +112,7 @@ def run():
         page.get_by_role("link", name=re.compile("Lake house weekend")).click()
         expect(page.get_by_role("heading", name="Event power rankings")).to_be_visible()
         shot(page, "06-event")
-        page.get_by_role("button", name="+ Add Grand Prix").click()
+        page.get_by_role("button", name="+ New VS session (4 races)").click()
         page.get_by_role("tab", name="📷 Photo").click()
         page.get_by_role("radio", name="4 after-race screens").click()
         expect(page.get_by_text("0 of 4 race photos added")).to_be_visible()

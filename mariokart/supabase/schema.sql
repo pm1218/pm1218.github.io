@@ -128,7 +128,7 @@ create table if not exists public.grand_prix (
   id              uuid primary key default gen_random_uuid(),
   event_id        uuid not null references public.events(id) on delete cascade,
   seq             int  not null check (seq >= 1),
-  cup             text not null check (cup = any(public.mkw_cups())),
+  cup             text check (cup is null or cup = any(public.mkw_cups())),  -- unused for VS sessions (random tracks)
   engine_class    text not null default '150cc' check (engine_class in ('50cc','100cc','150cc','Mirror')),
   entry_mode      text check (entry_mode in ('total','races')),
   status          text not null default 'draft' check (status in ('draft','confirmed')),
@@ -141,7 +141,7 @@ create table if not exists public.grand_prix (
   check ((status = 'confirmed') = (entry_mode is not null and confirmed_at is not null))
 );
 
--- One row per kart in the GP (approved humans, guests and CPUs).
+-- One row per human kart in the session (members and guests). CPUs are not tracked.
 create table if not exists public.gp_participants (
   id          uuid primary key default gen_random_uuid(),
   gp_id       uuid not null references public.grand_prix(id) on delete cascade,
@@ -160,7 +160,7 @@ create table if not exists public.races (
   id          uuid primary key default gen_random_uuid(),
   gp_id       uuid not null references public.grand_prix(id) on delete cascade,
   race_number int  not null check (race_number between 1 and 4),
-  track       text not null check (char_length(track) between 1 and 60),
+  track       text check (track is null or char_length(track) between 1 and 60),  -- optional: VS tracks are random
   unique (gp_id, race_number)
 );
 
@@ -194,6 +194,12 @@ create table if not exists public.icon_templates (
   created_by  uuid not null default auth.uid() references public.profiles(id),
   created_at  timestamptz not null default now()
 );
+
+-- VS mode (safe to re-run on an existing database)
+alter table public.grand_prix alter column cup drop not null;
+alter table public.races alter column track drop not null;
+alter table public.races drop constraint if exists races_track_check;
+alter table public.races add constraint races_track_check check (track is null or char_length(track) between 1 and 60);
 
 create index if not exists grand_prix_event_idx on public.grand_prix(event_id);
 create index if not exists gp_participants_gp_idx on public.gp_participants(gp_id);
@@ -270,7 +276,7 @@ begin
   -- Participants -----------------------------------------------------
   v_n := jsonb_array_length(v_parts);
   if v_n < 2 or v_n > 12 then
-    raise exception 'a grand prix needs between 2 and 12 participants (got %)', v_n;
+    raise exception 'a session needs between 2 and 12 players (got %)', v_n;
   end if;
 
   select array_agg(e ->> 'key') into v_keys from jsonb_array_elements(v_parts) e;
@@ -284,6 +290,9 @@ begin
   end if;
   if not exists (select 1 from jsonb_array_elements(v_parts) e where nullif(e ->> 'profile_id','') is not null) then
     raise exception 'map at least one kart to a group member';
+  end if;
+  if exists (select 1 from jsonb_array_elements(v_parts) e where coalesce((e ->> 'is_cpu')::boolean, false)) then
+    raise exception 'CPU players are not tracked — remove them before confirming';
   end if;
 
   -- Mode-specific validation ------------------------------------------
@@ -299,9 +308,6 @@ begin
     end if;
 
     for v_race in select * from jsonb_array_elements(v_races) loop
-      if coalesce(trim(v_race ->> 'track'), '') = '' then
-        raise exception 'race % is missing its track', v_race ->> 'race_number';
-      end if;
       select count(*), count(distinct r ->> 'key'), count(distinct (r ->> 'placement')::int)
         into v_cnt, v_total, v_n
         from jsonb_array_elements(coalesce(v_race -> 'results', '[]'::jsonb)) r;
@@ -364,7 +370,7 @@ begin
   if v_mode = 'races' then
     for v_race in select * from jsonb_array_elements(v_races) loop
       insert into public.races (gp_id, race_number, track)
-      values (p_gp_id, (v_race ->> 'race_number')::int, trim(v_race ->> 'track'))
+      values (p_gp_id, (v_race ->> 'race_number')::int, nullif(trim(coalesce(v_race ->> 'track', '')), ''))
       returning id into v_race_id;
       for v_res in select * from jsonb_array_elements(v_race -> 'results') loop
         insert into public.race_results (race_id, participant_id, placement, points)

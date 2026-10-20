@@ -37,9 +37,9 @@ const ordinal = (n: number) => {
 };
 
 type Participant = { id: string; profile_id: string | null; label: string; character: string | null; is_cpu: boolean; final_total: number; final_place: number };
-type Race = { race_number: number; track: string; race_results: { participant_id: string; placement: number; points: number }[] };
+type Race = { race_number: number; track: string | null; race_results: { participant_id: string; placement: number; points: number }[] };
 type Gp = {
-  id: string; event_id: string; seq: number; cup: string; engine_class: string; entry_mode: string; status: string;
+  id: string; event_id: string; seq: number; cup: string | null; engine_class: string; entry_mode: string; status: string;
   confirmed_at: string; confirmed_by: string; summary_sent_at: string | null;
   gp_participants: Participant[]; races: Race[]; events: { id: string; name: string };
 };
@@ -100,7 +100,7 @@ function buildEmail(gp: Gp, eventGps: Gp[], appUrl: string) {
   const base = appUrl.endsWith('/') ? appUrl : `${appUrl}/`;
   const gpLink = `${base}#/gp/${gp.id}`;
   const eventLink = `${base}#/events/${gp.event_id}`;
-  const title = `${gp.events.name} — GP ${gp.seq}, ${gp.cup} Cup (${gp.engine_class})`;
+  const title = `${gp.events.name} — VS ${gp.seq}${gp.cup ? `, ${gp.cup} Cup` : ''} (${gp.engine_class})`;
   const winner = ps[0];
 
   const cell = 'padding:8px 10px;border-bottom:1px solid #e5e1d8;font-size:14px;';
@@ -125,7 +125,7 @@ function buildEmail(gp: Gp, eventGps: Gp[], appUrl: string) {
   const html = `<!doctype html><html><body style="margin:0;background:#f4f2ee;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#1b1d22">
 <div style="max-width:600px;margin:0 auto;padding:16px">
   <div style="background:#c81e2a;color:#fff;border-radius:14px 14px 0 0;padding:16px 18px">
-    <div style="font-size:12px;opacity:.85;text-transform:uppercase;letter-spacing:.08em">Grand Prix confirmed</div>
+    <div style="font-size:12px;opacity:.85;text-transform:uppercase;letter-spacing:.08em">VS session confirmed</div>
     <div style="font-size:20px;font-weight:800;margin-top:4px">${esc(title)}</div>
     ${winner ? `<div style="margin-top:6px;font-size:15px">🏆 ${esc(winner.label)} with ${winner.final_total} points</div>` : ''}
   </div>
@@ -134,7 +134,7 @@ function buildEmail(gp: Gp, eventGps: Gp[], appUrl: string) {
     <div style="overflow-x:auto"><table role="presentation" style="width:100%;border-collapse:collapse">
       <tr><th style="${head}"></th><th style="${head}">Kart</th>${raceHeads}<th style="${head}text-align:right">Pts</th></tr>${standings}
     </table></div>
-    ${gp.entry_mode === 'races' ? `<p style="margin:10px 8px 0;font-size:12px;color:#667085">Tracks: ${races.map((r) => `R${r.race_number} ${esc(r.track)}`).join(' · ')}</p>` : ''}
+    ${gp.entry_mode === 'races' && races.some((r) => r.track) ? `<p style="margin:10px 8px 0;font-size:12px;color:#667085">Tracks: ${races.map((r) => `R${r.race_number} ${esc(r.track || '—')}`).join(' · ')}</p>` : ''}
     <h3 style="margin:20px 8px 6px;font-size:15px">${esc(gp.events.name)} so far (${eventGps.length} GP${eventGps.length === 1 ? '' : 's'})</h3>
     <table role="presentation" style="width:100%;border-collapse:collapse">
       <tr><th style="${head}">Player</th><th style="${head}text-align:right">Avg pts</th><th style="${head}text-align:right">Avg place</th><th style="${head}text-align:right">Wins</th></tr>${eventRows}
@@ -161,7 +161,7 @@ function buildEmail(gp: Gp, eventGps: Gp[], appUrl: string) {
     `Event: ${eventLink}`,
   ].filter((l) => l !== null).join('\n');
 
-  return { subject: `🏁 ${winner ? `${winner.label} wins ` : ''}GP ${gp.seq} · ${gp.cup} Cup — ${gp.events.name}`, html, text };
+  return { subject: `🏁 ${winner ? `${winner.label} wins ` : ''}VS ${gp.seq} — ${gp.events.name}`, html, text };
 }
 
 Deno.serve(async (req) => {
