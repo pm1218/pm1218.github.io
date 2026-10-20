@@ -11,6 +11,9 @@
 // Env: SUPABASE_URL, SUPABASE_SECRET_KEY (or legacy service_role key),
 //      SMTP_HOST, SMTP_PORT (587 STARTTLS / 465 TLS), SMTP_USER, SMTP_PASS,
 //      MAIL_FROM, APP_URL. Optional: MAX_AGE_DAYS (default 3), DRY_RUN=1.
+//
+// Recipients: the players in the session (or, for a recap, everyone who
+// played in the event) plus all admins — only addresses still approved.
 
 import { sendMail } from './smtp.mjs';
 import { sessionEmail, eventRecapEmail } from './templates.mjs';
@@ -51,13 +54,23 @@ export async function runMailer(env, { fetchImpl = fetch, send = sendMail, now =
   report.finalized = await db.rpc('finalize_stale_events');
   if (report.finalized) log(`Auto-finalized ${report.finalized} idle event(s).`);
 
-  const recipients = (await db.get('approved_users?select=email')).map((r) => r.email);
-  const profiles = await db.get('profiles?select=id,display_name');
-  if (!recipients.length) { log('No members to email.'); return report; }
+  const approved = await db.get('approved_users?select=email,is_admin');
+  const profiles = await db.get('profiles?select=id,display_name,email');
+  const lc = (e) => String(e || '').toLowerCase();
+  const approvedSet = new Set(approved.map((a) => lc(a.email)));
+  const admins = approved.filter((a) => a.is_admin).map((a) => lc(a.email));
+  const emailOf = new Map(profiles.map((p) => [p.id, lc(p.email)]));
 
-  const deliver = async (mail) => {
-    if (dry) { log(`[dry run] would send "${mail.subject}" to ${recipients.length}`); return; }
-    // To: the sender; everyone else on BCC so addresses stay private.
+  /** Players (members with a profile) in the given sessions + admins, approved only. */
+  const recipientsFor = (gps) => {
+    const players = gps.flatMap((g) => (g.gp_participants || []).map((p) => emailOf.get(p.profile_id))).filter(Boolean);
+    return [...new Set([...players, ...admins])].filter((e) => approvedSet.has(e)).sort();
+  };
+
+  const deliver = async (mail, recipients) => {
+    if (!recipients.length) { log(`No recipients for "${mail.subject}"`); return; }
+    if (dry) { log(`[dry run] would send "${mail.subject}" to ${recipients.join(', ')}`); return; }
+    // To: the sender; recipients on BCC so addresses stay private.
     await send({ ...smtp, to: smtp.from, bcc: recipients, ...mail });
   };
 
@@ -69,7 +82,7 @@ export async function runMailer(env, { fetchImpl = fetch, send = sendMail, now =
     try {
       const eventGps = await db.get(`grand_prix?select=${GP_SELECT}&event_id=eq.${gp.event_id}&status=eq.confirmed&order=seq`);
       const mail = sessionEmail(gp, eventGps, profiles, env.APP_URL);
-      await deliver(mail);
+      await deliver(mail, recipientsFor([gp]));
       report.sessions++;
       log(`Sent: ${mail.subject}`);
     } catch (e) {
@@ -86,7 +99,7 @@ export async function runMailer(env, { fetchImpl = fetch, send = sendMail, now =
     try {
       const eventGps = await db.get(`grand_prix?select=${GP_SELECT}&event_id=eq.${ev.id}&status=eq.confirmed&order=seq`);
       const mail = eventRecapEmail(ev, eventGps, profiles, env.APP_URL);
-      await deliver(mail);
+      await deliver(mail, recipientsFor(eventGps));
       report.recaps++;
       log(`Sent: ${mail.subject}`);
     } catch (e) {

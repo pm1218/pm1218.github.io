@@ -195,7 +195,7 @@ async function viewEvent(id) {
     if (canManage) {
       const fin = h('button', { type: 'button', class: 'btn small' }, 'Finalize now');
       fin.addEventListener('click', busy(fin, async () => {
-        if (!confirm(`Finalize "${ev.name}"? No more sessions can be added, and the final standings are emailed to everyone.`)) return;
+        if (!confirm(`Finalize "${ev.name}"? No more sessions can be added, and the final standings are emailed to everyone who played, plus admins.`)) return;
         await api.finalizeEvent(id); toast('Event finalized'); viewEvent(id);
       }));
       status.append(' ', fin);
@@ -521,10 +521,10 @@ function viewGpEntry(gp) {
   }
 
   // ---- review + confirm
-  const confirmBtn = h('button', { type: 'button', class: 'btn primary block big' }, 'Confirm & email everyone');
+  const confirmBtn = h('button', { type: 'button', class: 'btn primary block big' }, 'Confirm & email the players');
   confirmBtn.addEventListener('click', busy(confirmBtn, async () => {
     const payload = toPayload(draft);
-    if (!confirm(`Confirm VS ${gp.seq} (${draft.mode === 'races' ? '4 races' : 'final totals'}) and email the summary to every member?`)) return;
+    if (!confirm(`Confirm VS ${gp.seq} (${draft.mode === 'races' ? '4 races' : 'final totals'}) and email the summary to the players and admins?`)) return;
     if (photo.analysis) {
       confirmBtn.textContent = 'Uploading photos…';
       const vision = await import('./vision.js');

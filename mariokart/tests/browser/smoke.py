@@ -76,13 +76,13 @@ def run():
             for name, place in zip(names, order):
                 page.get_by_label(f"{name} placement in race {ri + 1}").select_option(str(place))
         expect(page.get_by_text("3 of 4 races complete")).to_be_visible()
-        expect(page.get_by_role("button", name="Confirm & email everyone")).to_be_disabled()
+        expect(page.get_by_role("button", name="Confirm & email the players")).to_be_disabled()
         shot(page, "03-races-incomplete")
         page.get_by_role("tab", name=re.compile(r"^R4")).click()
         for name, place in zip(names, orders[3]):
             page.get_by_label(f"{name} placement in race 4").select_option(str(place))
         expect(page.get_by_text("All 4 races complete")).to_be_visible()
-        confirm = page.get_by_role("button", name="Confirm & email everyone")
+        confirm = page.get_by_role("button", name="Confirm & email the players")
         expect(confirm).to_be_enabled()
         shot(page, "04-races-complete")
         confirm.click()
@@ -108,7 +108,7 @@ def run():
         # optional tracks with final totals
         page.get_by_label("Race 1 track").select_option("Coconut Mall")
         page.get_by_label("Race 3 track").select_option("Rainbow Road")
-        page.get_by_role("button", name="Confirm & email everyone").click()
+        page.get_by_role("button", name="Confirm & email the players").click()
         expect(page.locator(".results tbody tr").first).to_contain_text("Anya")
 
         # --- photo tab: race mode needs all four photos

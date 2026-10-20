@@ -106,15 +106,15 @@ test('message builder: valid multipart', () => {
 const P = (id, profile_id, label, total, place) => ({ id, profile_id, label, character: null, is_cpu: false, final_total: total, final_place: place });
 function fakeDb() {
   const db = {
-    approved_users: [{ email: 'anya@x.com' }, { email: 'dev@x.com' }],
-    profiles: [{ id: 'u1', display_name: 'Anya' }, { id: 'u2', display_name: 'Dev' }],
+    approved_users: [{ email: 'anya@x.com', is_admin: false }, { email: 'dev@x.com', is_admin: false }, { email: 'sam@x.com', is_admin: false }, { email: 'boss@x.com', is_admin: true }],
+    profiles: [{ id: 'u1', display_name: 'Anya', email: 'anya@x.com' }, { id: 'u2', display_name: 'Dev', email: 'Dev@x.com' }, { id: 'u3', display_name: 'Sam', email: 'sam@x.com' }, { id: 'u4', display_name: 'Removed', email: 'gone@x.com' }],
     events: [
       { id: 'e1', name: 'Friday', finalized_at: null, recap_sent_at: null },
       { id: 'e2', name: 'Lake trip', finalized_at: '2026-10-19T20:00:00Z', recap_sent_at: null },
     ],
     grand_prix: [
       { id: 'g1', event_id: 'e1', seq: 1, engine_class: '150cc', entry_mode: 'total', status: 'confirmed', confirmed_at: '2026-10-19T21:00:00Z', summary_sent_at: null,
-        gp_participants: [P('p1', 'u1', 'Anya', 50, 1), P('p2', 'u2', 'Dev', 41, 2)], races: [{ race_number: 1, track: 'Coconut Mall', race_results: [] }], events: { id: 'e1', name: 'Friday' } },
+        gp_participants: [P('p1', 'u1', 'Anya', 50, 1), P('p2', 'u2', 'Dev', 41, 2), P('p5', null, 'Guest', 30, 3), P('p6', 'u4', 'Removed', 20, 4)], races: [{ race_number: 1, track: 'Coconut Mall', race_results: [] }], events: { id: 'e1', name: 'Friday' } },
       { id: 'g2', event_id: 'e2', seq: 1, engine_class: '150cc', entry_mode: 'total', status: 'confirmed', confirmed_at: '2026-10-19T08:00:00Z', summary_sent_at: '2026-10-19T08:05:00Z',
         gp_participants: [P('p3', 'u2', 'Dev', 44, 1), P('p4', 'u1', 'Anya', 40, 2)], races: [], events: { id: 'e2', name: 'Lake trip' } },
     ],
@@ -141,14 +141,16 @@ function fakeDb() {
 }
 const ENV = { SUPABASE_URL: 'https://p.supabase.co', SUPABASE_SECRET_KEY: 'sb_secret_x', APP_URL: 'https://prateekm.me/mariokart/', MAIL_FROM: 'Kart Club <kart@club.example>', SMTP_HOST: 'smtp.protonmail.ch', SMTP_PORT: '587', SMTP_USER: 'kart@club.example', SMTP_PASS: 't' };
 
-test('mailer run: one summary + one recap, BCC to members, claims recorded, no double send', async () => {
+test('mailer run: one summary + one recap, to the players involved + admins, claims recorded, no double send', async () => {
   const { db, fetchImpl, calls } = fakeDb();
   const sent = [];
   const send = async (m) => { sent.push(m); };
   const r = await runMailer(ENV, { fetchImpl, send, now: new Date('2026-10-19T22:00:00Z'), log: () => {} });
   assert.deepEqual([r.sessions, r.recaps, r.failures.length], [1, 1, 0]);
   assert.equal(sent[0].subject, '🏁 Anya wins VS 1 — Friday');
-  assert.deepEqual(sent[0].bcc, ['anya@x.com', 'dev@x.com']);
+  // players in the session (approved only: no guest, no removed member) + the admin; Sam didn't play
+  assert.deepEqual(sent[0].bcc, ['anya@x.com', 'boss@x.com', 'dev@x.com']);
+  assert.deepEqual(sent[1].bcc, ['anya@x.com', 'boss@x.com', 'dev@x.com'], 'recap: everyone who played in the event + admins');
   assert.equal(sent[0].port, 587);
   assert.match(sent[0].html, /Tracks: R1 Coconut Mall/);
   assert.match(sent[1].subject, /Lake trip is over — Dev takes it/);

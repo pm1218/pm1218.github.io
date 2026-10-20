@@ -39,6 +39,7 @@ mariokart/
 7. **Login:** an 8-digit email code (OTP). Supabase Auth handles code generation, single use and expiry (set to 600 s = 10 min).
 8. **Email:** your own SMTP account — Proton Mail (port 587, STARTTLS, SMTP token on a custom-domain address) or any other. Supabase Edge Functions block outbound port 587, so summary emails are sent by a **GitHub Actions** job (`.github/workflows/kart-mailer.yml`) every 10 minutes instead.
 8a. **Events are live until finalized:** an event's standings are pinned at the top of Stats while it is live. It ends when its creator or an admin taps *Finalize now*, or automatically **12 hours after the last upload** (session created or scores confirmed). After that no sessions can be added (an admin can reopen it), and a final-standings recap is emailed.
+8b. **Who gets email:** a session summary goes to the members who played in that session plus all admins; an event recap goes to everyone who played in any of the event's sessions plus all admins. Guests have no address, and removed members are skipped.
 9. **Corrections:** confirmed GPs are locked; an admin can reopen one to fix it.
 10. **Admin bootstrap:** the first admin is added once by SQL; after that, admins manage the whitelist in the app.
 
