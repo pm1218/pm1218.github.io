@@ -35,7 +35,7 @@ mariokart/
 5. **Mario Kart Wii only.** Switch scores are a separate game and out of scope for now (a later project). Two Wii screens are read: the **after-race standings** (12 full-width bars; "+gained" while rows are in race order, then re-sorted by total) and the **final results** ("You got Nth place!", two columns of six). Each row shows the character's name (or a Mii name), its icon and the total; human players' rows have a coloured bar. Photos are phone shots of a TV: angled, glare, moiré, sometimes cropped.
 5a. **VS sessions vs Grand Prix:** your photos are "150cc VS" screens. A 4-race VS session scores exactly like a Grand Prix (max 60). Totals above 60 mean more than four races were played; the app flags those instead of storing them as one GP.
 6. **Character icons are not shipped.** Nintendo artwork isn't redistributable. On the Wii the character's name is printed on the row, so the character comes from the text; icons are only needed for rows showing a Mii name, and that matcher **learns from your own confirmed photos** (each confirmed GP saves its icon crops as labelled templates).
-7. **Login:** a 6-digit email code (OTP). Supabase Auth handles code generation, single use and expiry (set to 600 s = 10 min).
+7. **Login:** an 8-digit email code (OTP). Supabase Auth handles code generation, single use and expiry (set to 600 s = 10 min).
 8. **Email:** any SMTP account you own (e.g. Gmail with an app password, ~500 mails/day free). Supabase Edge Functions block ports 25/587, so port **465** is used.
 9. **Corrections:** confirmed GPs are locked; an admin can reopen one to fix it.
 10. **Admin bootstrap:** the first admin is added once by SQL; after that, admins manage the whitelist in the app.
@@ -80,7 +80,7 @@ mariokart/
 
 - **Backend**: Postgres schema + PL/pgSQL (`submit_grand_prix`, `reopen_grand_prix`), RLS policies, an `auth.users` trigger enforcing the whitelist, and one Deno edge function for email.
 - **Frontend**: hash routes `#/events`, `#/events/:id`, `#/gp/:id` (entry form while draft, results once confirmed), `#/stats[/:eventId]`, `#/me`, `#/admin`. Hash routing works on static hosting and keeps the back button natural.
-- **Auth flow**: email → `signInWithOtp` → Postgres trigger rejects unknown emails (no account, no mail) → member receives 6-digit code → `verifyOtp` → Supabase issues a JWT session (short-lived access token + rotating refresh token) → app double-checks the whitelist and signs out anyone removed.
+- **Auth flow**: email → `signInWithOtp` → Postgres trigger rejects unknown emails (no account, no mail) → member receives 8-digit code → `verifyOtp` → Supabase issues a JWT session (short-lived access token + rotating refresh token) → app double-checks the whitelist and signs out anyone removed.
 - **Image pipeline**: rectify screen → find rows → OCR each row → parse → crop + match icons → suggest identities → normalise into a draft → uploader reviews/overrides → confirm.
 - **Normalisation**: every input path (typed totals, typed placements, photo of final screen, photos of 4 race screens) becomes the same *draft* object; the server recomputes all points from placements and ranks totals itself.
 - **Mobile UI**: three-tab entry (Final totals / All 4 races / 📷 Photo), one race visible at a time (R1-R4 segmented control with ✓), drafts autosave to the phone so a reload or app switch loses nothing.
@@ -109,7 +109,7 @@ Relationships: event 1-N grand_prix 1-N gp_participants; grand_prix 1-N races 1-
 
 - **Request code** (`api.requestCode`): `supabase.auth.signInWithOtp({ email })`. The UI always says "if this email is a member, a code is on its way" so the whitelist can't be probed.
 - **Whitelist gate** (`enforce_whitelist` trigger, `BEFORE INSERT ON auth.users`): unknown emails raise an exception, so Supabase never creates the user and never sends mail.
-- **Code properties**: Supabase generates a 6-digit OTP (template uses `{{ .Token }}`), it is single-use, and expires after **Email OTP Expiration = 600 s**. Supabase also rate-limits requests.
+- **Code properties**: Supabase generates an 8-digit OTP (template uses `{{ .Token }}`), it is single-use, and expires after **Email OTP Expiration = 600 s**. Supabase also rate-limits requests.
 - **Email delivery**: Supabase Auth sends through your **custom SMTP** settings (Gmail/any provider) — standard, open protocol, free.
 - **Verify** (`api.verifyCode`): `verifyOtp({ email, token, type: 'email' })` → session JWT stored by supabase-js, auto-refreshed.
 - **Session security**: access tokens are short-lived signed JWTs; refresh tokens rotate; all data access is re-authorised by RLS on every request, so removing someone from `approved_users` cuts access immediately even if they still hold a token. On boot the app also signs out sessions whose email is no longer approved.
@@ -209,7 +209,7 @@ Insights Anya: clutch −0.5 (finishes strong), 2-GP win streak
 
 | Route | View |
 |---|---|
-| `#/login` | email → 6-digit code (numeric keypad, auto-submit at 6 digits, resend, change email) |
+| `#/login` | email → 8-digit code (numeric keypad, auto-submit at 8 digits, resend, change email) |
 | `#/events` | event list + collapsible "New event" form |
 | `#/events/:id` | event power rankings, GP list (Draft/Confirmed), add GP (cup → tracks pre-filled), delete |
 | `#/gp/:id` (draft) | entry: tabs *Final totals / All 4 races / 📷 Photo*, kart editor (member/guest/CPU, name, character, photo suggestion + reason), live review table, sticky **Confirm & email everyone** |

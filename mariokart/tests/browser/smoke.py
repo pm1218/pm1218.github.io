@@ -48,9 +48,9 @@ def run():
         shot(page, "01-login")
         page.get_by_label("Email").fill("admin@example.com")
         page.get_by_role("button", name="Email me a code").click()
-        page.get_by_label("6-digit code").fill("000000")
+        page.get_by_label("8-digit code").fill("00000000")
         expect(page.get_by_text("Token has expired or is invalid")).to_be_visible()
-        page.get_by_label("6-digit code").fill("123456")
+        page.get_by_label("8-digit code").fill("12345678")
         expect(page.get_by_role("heading", name="Events")).to_be_visible()
         shot(page, "02-events-empty")
 

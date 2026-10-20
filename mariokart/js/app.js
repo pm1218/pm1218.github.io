@@ -71,7 +71,7 @@ function viewLogin() {
       const btn = h('button', { class: 'btn primary block', type: 'submit' }, 'Email me a code');
       const form = h('form', { class: 'card' },
         h('label', { for: 'email' }, 'Email'), input, btn,
-        h('p', { class: 'muted small' }, 'Members only. No passwords — we email you a 6-digit code that works once and expires in 10 minutes.'));
+        h('p', { class: 'muted small' }, 'Members only. No passwords — we email you an 8-digit code that works once and expires in 10 minutes.'));
       form.addEventListener('submit', busy(btn, async () => {
         email = input.value.trim().toLowerCase();
         if (!email) return;
@@ -84,17 +84,17 @@ function viewLogin() {
       box.append(form);
       setTimeout(() => input.focus(), 50);
     } else {
-      const input = h('input', { id: 'code', inputmode: 'numeric', autocomplete: 'one-time-code', pattern: '[0-9]{6}', maxlength: '6', required: true, placeholder: '123456', class: 'code-input' });
+      const input = h('input', { id: 'code', inputmode: 'numeric', autocomplete: 'one-time-code', pattern: '[0-9]{8}', maxlength: '8', required: true, placeholder: '12345678', class: 'code-input' });
       const btn = h('button', { class: 'btn primary block', type: 'submit' }, 'Sign in');
       const resend = h('button', { type: 'button', class: 'btn link' }, 'Resend code');
       resend.addEventListener('click', busy(resend, async () => { await api.requestCode(email); toast('New code sent'); }));
       const form = h('form', { class: 'card' },
         h('p', {}, 'If ', h('strong', {}, email), ' is on the member list, a code is on its way.'),
-        h('label', { for: 'code' }, '6-digit code'), input, btn,
+        h('label', { for: 'code' }, '8-digit code'), input, btn,
         h('div', { class: 'row-between' },
           h('button', { type: 'button', class: 'btn link', onclick: () => { codeSent = false; store.del('mk-code-sent'); draw(); } }, 'Use a different email'),
           resend));
-      input.addEventListener('input', () => { input.value = input.value.replace(/\D/g, '').slice(0, 6); if (input.value.length === 6) form.requestSubmit(); });
+      input.addEventListener('input', () => { input.value = input.value.replace(/\D/g, '').slice(0, 8); if (input.value.length === 8) form.requestSubmit(); });
       form.addEventListener('submit', busy(btn, async () => {
         await api.verifyCode(email, input.value);
         store.del('mk-code-sent');

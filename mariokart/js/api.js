@@ -22,11 +22,17 @@ function check({ data, error }) {
 }
 
 // ---------------------------------------------------------------- auth
-// Supabase Auth sends the 6-digit code (email template uses {{ .Token }}),
+// Supabase Auth sends the 8-digit code (email template uses {{ .Token }}),
 // enforces single use, and expires it after the configured OTP lifetime
 // (set to 600 s). The whitelist trigger in schema.sql refuses unknown emails.
 export async function requestCode(email) {
-  const { error } = await sb.auth.signInWithOtp({ email, options: { shouldCreateUser: true } });
+  const { error } = await sb.auth.signInWithOtp({
+    email,
+    options: {
+      shouldCreateUser: true,
+      emailRedirectTo: CONFIG.APP_URL,
+    },
+  });
   // Don't reveal whether an address is on the whitelist; only surface
   // rate-limit errors, which are useful and leak nothing.
   if (error && /rate|seconds|too many/i.test(error.message)) throw new Error(error.message);

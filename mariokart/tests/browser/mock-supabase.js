@@ -119,7 +119,7 @@ export function createClient() {
     auth: {
       signInWithOtp: async () => ({ error: null }),
       verifyOtp: async ({ email, token }) => {
-        if (token !== '123456') return { data: null, error: { message: 'Token has expired or is invalid' } };
+        if (token !== '12345678') return { data: null, error: { message: 'Token has expired or is invalid' } };
         session = { user: { id: ME.id, email } }; listeners.forEach((l) => l('SIGNED_IN', session));
         return { data: { session }, error: null };
       },
