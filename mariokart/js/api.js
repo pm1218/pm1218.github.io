@@ -55,7 +55,7 @@ export async function loadMe(session) {
   return { session, profile, approved: Boolean(approval), isAdmin: Boolean(approval?.is_admin) };
 }
 
-export const listProfiles = async () => check(await sb.from('profiles').select('id,email,display_name,mii_name,favorite_character').order('display_name'));
+export const listProfiles = async () => check(await sb.from('profiles').select('id,email,display_name,favorite_character').order('display_name'));
 
 export async function updateProfile(id, fields) {
   return check(await sb.from('profiles').update(fields).eq('id', id).select().single());

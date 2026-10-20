@@ -32,7 +32,7 @@ mariokart/
 2. **Group size < 25, a few GPs per session.** Data stays tiny (thousands of rows), so analytics are computed in the browser from the full dataset; no caching or background jobs.
 3. **Mario Kart Wii rules:** a Grand Prix is exactly 4 races; 12 karts; race points 15-12-10-8-7-6-5-4-3-2-1-0; max GP total 60. Cups map to fixed track orders, so picking the cup pre-fills the 4 tracks.
 4. **Karts:** a GP can include members, guests and CPUs. Only members are ranked, but every entered kart counts toward field size. You may enter just the humans; placements still range over 1-12 (e.g. 1st, 5th, 9th) because CPUs finished in between.
-5. **Mario Kart Wii only.** Switch scores are a separate game and out of scope for now (a later project). Two Wii screens are read: the **after-race standings** (12 full-width bars; "+gained" while rows are in race order, then re-sorted by total) and the **final results** ("You got Nth place!", two columns of six). Each row shows the character's name (or a Mii name), its icon and the total; human players' rows have a coloured bar. Photos are phone shots of a TV: angled, glare, moiré, sometimes cropped.
+5. **Mario Kart Wii only.** Switch scores are a separate game and out of scope for now (a later project). Two Wii screens are read: the **after-race standings** (12 full-width bars; "+gained" while rows are in race order, then re-sorted by total) and the **final results** ("You got Nth place!", two columns of six). Each row shows the character's name, its icon and the total (the group doesn't use Mii names); human players' rows have a coloured bar. Photos are phone shots of a TV: angled, glare, moiré, sometimes cropped.
 5a. **VS mode, not cups:** the group plays **Versus** — 4 races on random tracks — so a session has no cup and tracks are optional per race (pick them if you want per-track stats). Tracks can be recorded even when only the final totals are entered. Scoring is the same 15-12-10-8-…-0 table (max 60 over 4 races). Totals above 60 mean more than four races were played; the app flags those.
 5b. **Players only:** typically 4 players are tracked (members, or guests). CPUs race but are **not stored**: the photo reader drops rows without a player bar (listing them so a missed player can be added back), manual entry has no CPU option, and `submit_grand_prix` rejects CPU rows. Race placements are still out of all 12 karts so points match the game; session places are among the players.
 6. **Character icons are not shipped.** Nintendo artwork isn't redistributable. On the Wii the character's name is printed on the row, so the character comes from the text; icons are only needed for rows showing a Mii name, and that matcher **learns from your own confirmed photos** (each confirmed GP saves its icon crops as labelled templates).
@@ -96,7 +96,7 @@ All in [`supabase/schema.sql`](supabase/schema.sql).
 | Table | Key fields | Constraints |
 |---|---|---|
 | `approved_users` | `email` citext **PK**, `is_admin`, `added_by`, `added_at` | email format check; deferred trigger keeps ≥ 1 admin |
-| `profiles` | `id` → `auth.users` **PK**, `email` unique, `display_name`, `mii_name`, `favorite_character` | character ∈ 25 MKWii characters; created by trigger on first login |
+| `profiles` | `id` → `auth.users` **PK**, `email` unique, `display_name`, `favorite_character` (the character the member races as; `mii_name` is unused) | character ∈ 25 MKWii characters; created by trigger on first login |
 | `events` | `id`, `name`, `kind` (session/weekend/trip/other), `location`, `starts_on`, `created_by` → profiles | name 1-120 chars |
 | `grand_prix` | `id`, `event_id` → events (cascade), `seq`, `cup`, `engine_class`, `entry_mode` (total/races), `status` (draft/confirmed), `confirmed_by/at`, `summary_sent_at` | unique (event_id, seq); `seq` auto-numbered; status ⇔ entry_mode+confirmed_at consistency check |
 | `gp_participants` | `id`, `gp_id` → grand_prix, `profile_id` → profiles (null = guest/CPU), `label`, `character`, `is_cpu`, `final_total`, `final_place` | total 0-60; place 1-12; CPU can't be a member; partial unique (gp_id, profile_id) |
@@ -152,7 +152,7 @@ Normalisation rules:
 1. **Find the TV** — largest bright/saturated region (HSV threshold → close/open → connected components), padded 2 %.
 2. **Straighten** — Canny + probabilistic Hough; the length-weighted median angle of long near-horizontal lines (the bar edges) is rotated out.
 3. **Pass 1, layout** — sparse OCR (PSM 11) of three binarisations of the whole screen: white-glyph mask (S < 85, V > 175), white top-hat on V + Otsu (bright text on any background), CLAHE grey. `planScreen()` then:
-   - matches text against a **closed vocabulary** (25 characters + the group's Mii names) with a fuzzy matcher, so "Manito" → Mario, "Koopa Tioopa" → Koopa Troopa;
+   - matches text against a **closed vocabulary** (the 25 characters) with a fuzzy matcher, so "Manito" → Mario, "Koopa Tioopa" → Koopa Troopa;
    - decides **final** (title / two columns of names) vs **standings**;
    - fits the row grid: a pitch/phase search over name and place-label anchors, then a quadratic curve for perspective, then per-row re-centring;
    - places a **name cell** and a **total cell** per row (standings: right-aligned column; final: shared right edge of each column, stopping before the 7th-12th labels).
@@ -161,7 +161,7 @@ Normalisation rules:
    - totals: 6 binarisations (adaptive threshold, blue-digit and white-digit masks, top-hat…) → `isolateDigits()` erases bar edges, then keeps the right-most group of tall glyphs (dropping "pts", "+gained", the wheel icon, specks) → single-line OCR, digits only.
 5. **Players** — median colour of thin strips above/below each name: standings CPU rows are dark/translucent; final-screen CPU rows sit on the plain blue background.
 6. **Decoding** — `pointsCandidates()` votes across binarisations (a lone "5" supports "45"); on final results and sorted standings `decodeDescending()` picks the best-scoring totals that never increase down the list (a misread is skipped rather than allowed to break the order). An after-race screen is recognised by "+gained" or by confidently out-of-order totals, and its rows are race placements.
-7. **Identity** (`identity.js`) — Mii name ≈ member's Mii name (strong), character == member's favourite (÷ members sharing it), + bonus for a player bar. Greedy one-to-one; unclaimed player rows become "choose who it was", the rest CPUs. The uploader can override every row.
+7. **Identity** (`identity.js`) — a row with a player bar whose character is the one a member races as (set on their profile) is suggested as that member. A character shared by several members isn't guessed — the uploader is told who shares it and picks. Player rows nobody races as become "choose who it was" (e.g. a guest); rows without a player bar are CPUs. The uploader can override every row.
 
 **Measured on your 17 photos** (11 standings, 6 final; `npm test` locks these in):
 
@@ -219,7 +219,7 @@ Insights Anya: clutch −0.5 (finishes strong), 2-GP win streak
 | `#/gp/:id` (draft) | entry: tabs *Final totals / All 4 races / 📷 Photo*, kart editor (member/guest/CPU, name, character, photo suggestion + reason), live review table, sticky **Confirm & email everyone** |
 | `#/gp/:id` (confirmed) | results with medals, race-by-race grid, tracks, photos, resend summary, admin reopen |
 | `#/stats[/:eventId]` | scope picker, power, Elo, consistency, head-to-head picker + matrix, best/worst tracks, per-track table filter, insights |
-| `#/me` | display name, Mii name, favourite character, sign out |
+| `#/me` | display name, your character (with a warning if another member uses it), sign out |
 | `#/admin` | approve/remove emails, toggle admin |
 
 Server API: PostgREST tables (RLS), `rpc/submit_grand_prix`, `rpc/reopen_grand_prix`, `rpc/finalize_event`, `rpc/finalize_stale_events`, `rpc/reopen_event`, Storage `score-photos`. It's a SPA rather than HTMX (HTMX needs a server rendering HTML; Pages can't). It degrades gracefully: hash routes keep back/forward working, `<noscript>` explains what's needed, OpenCV.js failure falls back to simpler CV, email failures leave the session confirmed and are retried on the next mailer run, and drafts survive reloads.
@@ -278,7 +278,7 @@ All code is in this folder — no placeholders. The only values you supply are y
 
    Then **Actions → Kart Club mailer → Run workflow** once to test. It runs every 10 minutes after that, sends a summary for each newly confirmed session (only from the last 3 days, so old ones aren't emailed), auto-finalizes idle events and sends their recap. GitHub pauses scheduled workflows in repos with no commits for 60 days — re-enable it on the Actions tab if that happens.
 4. **Frontend** — put the project URL and anon key (Project Settings → API) in `js/config.js`, commit, push. GitHub Pages publishes `https://prateekm.me/mariokart/` within a minute.
-5. **Add members** in the Admin tab. Everyone sets a Mii name + favourite character on the *Me* tab so photo suggestions work.
+5. **Add members** in the Admin tab. Everyone picks the character they race as on the *Me* tab — score screens show character names, so that's how photos recognise players (pick different characters; shared ones are left for the uploader to choose).
 
 **Upgrading an existing database**: re-run the whole `supabase/schema.sql` in the SQL editor. It is idempotent and keeps existing data (adds VS mode, optional tracks, the no-CPU rule, and event finalization).
 

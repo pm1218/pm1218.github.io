@@ -1,36 +1,26 @@
 // Suggest which group member drove which kart in an analysed photo.
 //
-// On Mario Kart Wii a result row shows the character's name (or the player's
-// Mii name), the character icon, and — for human players — a coloured bar.
-// Signals per (row, member):
-//   mii    – row text ≈ the member's Mii name (strong: it is their own label)
-//   fav    – row character == member's favourite character, weighted by how
-//            sure we are of the character and divided by how many members
-//            share that favourite (a shared favourite is weak evidence)
-//   human  – the row has a player's coloured bar (CPUs never do)
-// Assignment is greedy on the best remaining score, one row per member.
-// Rows nobody claims become CPUs unless they look human (then: guest).
+// Mario Kart Wii result rows show the character's name, and human players'
+// rows get a coloured bar. Each member sets the character they race as on
+// their profile, so:
+//   - a player-bar row whose character is used by exactly one member → that member
+//   - a character shared by several members → the uploader chooses (we say who)
+//   - a player-bar row nobody uses → "choose who it was" (e.g. a guest)
+//   - no player bar → CPU (not tracked)
+// Assignment is one row per member; the uploader can override every row.
 
-import { similarity } from './text.js';
-
-const MII_WEIGHT = 0.6;
-const FAV_WEIGHT = 0.45;
+const ASSIGN_MIN = 0.4;
+const CHAR_WEIGHT = 0.45;
 const HUMAN_BONUS = 0.15;
-const ASSIGN_MIN = 0.3;
 
-export function scorePair(row, profile, favouriteCounts) {
+export function scorePair(row, profile, charCounts) {
   const reasons = [];
   let score = 0;
-  const mii = Math.max(similarity(row.name, profile.mii_name || ''), similarity(row.name, profile.display_name || ''));
-  if (row.name && mii >= 0.75) {
-    score += MII_WEIGHT * mii;
-    reasons.push(`name "${row.name}" ≈ ${profile.mii_name || profile.display_name}`);
-  }
-  const fav = profile.favorite_character;
-  if (fav && row.character && fav === row.character) {
-    const share = favouriteCounts.get(fav) || 1;
-    score += (FAV_WEIGHT * (row.characterConfidence ?? 0.8)) / share;
-    reasons.push(`drives ${fav}, their favourite${share > 1 ? ` (shared by ${share} members)` : ''}`);
+  const ch = profile.favorite_character;
+  if (ch && row.character && ch === row.character) {
+    const share = charCounts.get(ch) || 1;
+    score += (CHAR_WEIGHT * (row.characterConfidence ?? 0.8)) / share;
+    reasons.push(`races as ${ch}${share > 1 ? ` (shared by ${share} members)` : ''}`);
   }
   if (score > 0 && row.human) {
     score += HUMAN_BONUS;
@@ -41,21 +31,23 @@ export function scorePair(row, profile, favouriteCounts) {
 
 /**
  * @param rows     [{ name, character, characterConfidence, human }]
- * @param profiles [{ id, display_name, mii_name, favorite_character }]
+ * @param profiles [{ id, display_name, favorite_character }]
  * @returns        per row: { profile_id, confidence, reasons, is_cpu }
  */
 export function suggestIdentities(rows, profiles) {
-  const favouriteCounts = new Map();
+  const charCounts = new Map();
+  const usersOf = new Map();
   for (const p of profiles) {
-    if (p.favorite_character) favouriteCounts.set(p.favorite_character, (favouriteCounts.get(p.favorite_character) || 0) + 1);
+    if (!p.favorite_character) continue;
+    charCounts.set(p.favorite_character, (charCounts.get(p.favorite_character) || 0) + 1);
+    usersOf.set(p.favorite_character, [...(usersOf.get(p.favorite_character) || []), p.display_name]);
   }
   const pairs = [];
   rows.forEach((row, ri) => {
-    // A row without a player bar is a CPU unless its text is someone's Mii name.
+    if (row.human === false) return; // no player bar → CPU
     profiles.forEach((p) => {
-      const { score, reasons } = scorePair(row, p, favouriteCounts);
-      const miiMatch = reasons.some((r) => r.startsWith('name'));
-      if (score >= ASSIGN_MIN && (row.human !== false || miiMatch)) pairs.push({ ri, profile: p, score, reasons });
+      const { score, reasons } = scorePair(row, p, charCounts);
+      if (score >= ASSIGN_MIN) pairs.push({ ri, profile: p, score, reasons });
     });
   });
   pairs.sort((a, b) => b.score - a.score);
@@ -69,8 +61,15 @@ export function suggestIdentities(rows, profiles) {
   }
   rows.forEach((row, i) => {
     if (result[i].profile_id) return;
-    if (row.human) result[i] = { profile_id: null, confidence: 0.5, reasons: ['player bar, but no member matched — choose who it was'], is_cpu: false };
-    else result[i] = { profile_id: null, confidence: row.human === false ? 0.8 : 0.5, reasons: [row.human === false ? 'no player bar → CPU' : 'no member matched → CPU'], is_cpu: true };
+    if (row.human === false) {
+      result[i] = { profile_id: null, confidence: 0.8, reasons: ['no player bar → CPU'], is_cpu: true };
+      return;
+    }
+    const sharers = row.character ? usersOf.get(row.character) || [] : [];
+    const reason = sharers.length > 1
+      ? `${row.character} is used by ${sharers.join(' and ')} — choose who it was`
+      : row.human ? 'player bar, but no member races as this character — choose who it was' : 'no member races as this character → CPU';
+    result[i] = { profile_id: null, confidence: 0.5, reasons: [reason], is_cpu: !row.human && sharers.length === 0 };
   });
   return result;
 }

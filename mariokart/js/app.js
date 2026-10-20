@@ -458,12 +458,10 @@ function viewGpEntry(gp) {
       progress.hidden = false;
       const setP = (frac, label) => { progress.querySelector('.bar').style.width = `${Math.round(frac * 100)}%`; progress.querySelector('.progress-label').textContent = label; };
       const templates = await api.loadTemplates().catch(() => []);
-      const miiNames = state.profiles.map((p) => p.mii_name).filter(Boolean);
       const screens = [];
       photo.colorCanvases = [];
       for (const [n, i] of slots.entries()) {
         const res = await vision.analyzePhoto(photo.files[i], {
-          miiNames,
           templates,
           onProgress: (p) => setP((n + p.progress) / slots.length, `${slots.length > 1 ? `Photo ${n + 1}/${slots.length}: ` : ''}${p.status}`),
         });
@@ -717,17 +715,22 @@ function h2hMatrixTable(m) {
 function viewMe() {
   const p = state.me.profile;
   const name = h('input', { id: 'me-name', value: p.display_name, maxlength: '40', required: true });
-  const mii = h('input', { id: 'me-mii', value: p.mii_name || '', maxlength: '20', placeholder: 'As shown on the Wii' });
   const fav = selectEl([{ value: '', label: 'Choose…' }, ...CHARACTERS], p.favorite_character || '', { id: 'me-fav' });
+  // Photos show character names, so each player should pick a different one.
+  const clash = h('p', { class: 'warn-text small', 'aria-live': 'polite' });
+  const showClash = () => {
+    const others = state.profiles.filter((o) => o.id !== p.id && o.favorite_character && o.favorite_character === fav.value).map((o) => o.display_name);
+    clash.textContent = others.length ? `${others.join(' and ')} also race${others.length === 1 ? 's' : ''} as ${fav.value}, so photos can't tell you apart — you'll be asked to choose.` : '';
+  };
+  fav.addEventListener('change', showClash); showClash();
   const btn = h('button', { class: 'btn primary block', type: 'submit' }, 'Save');
   const form = h('form', { class: 'card' },
     h('label', { for: 'me-name' }, 'Display name'), name,
-    h('label', { for: 'me-mii' }, 'Mii name'), mii,
-    h('p', { class: 'muted small' }, 'Used to recognise you in score-screen photos.'),
-    h('label', { for: 'me-fav' }, 'Favourite character'), fav,
-    h('p', { class: 'muted small' }, 'When a photo shows this character, we suggest it was you.'), btn);
+    h('label', { for: 'me-fav' }, 'Your character'), fav,
+    h('p', { class: 'muted small' }, 'The character you race as. Score screens show character names, so this is how photos recognise you.'),
+    clash, btn);
   form.addEventListener('submit', busy(btn, async () => {
-    state.me.profile = await api.updateProfile(p.id, { display_name: name.value.trim(), mii_name: mii.value.trim() || null, favorite_character: fav.value || null });
+    state.me.profile = await api.updateProfile(p.id, { display_name: name.value.trim(), favorite_character: fav.value || null });
     state.profiles = await api.listProfiles();
     toast('Saved');
   }));

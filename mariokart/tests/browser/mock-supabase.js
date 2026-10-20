@@ -13,9 +13,9 @@ const db = {
     { email: 'dev@example.com', is_admin: false, added_at: now() },
   ],
   profiles: [
-    { id: ME.id, email: ME.email, display_name: 'Prateek', mii_name: 'PRATEEK', favorite_character: 'Yoshi' },
-    { id: '00000000-0000-4000-8000-000000000002', email: 'anya@example.com', display_name: 'Anya', mii_name: 'Anya', favorite_character: 'Peach' },
-    { id: '00000000-0000-4000-8000-000000000003', email: 'dev@example.com', display_name: 'Dev', mii_name: 'DevK', favorite_character: 'Bowser' },
+    { id: ME.id, email: ME.email, display_name: 'Prateek', favorite_character: 'Yoshi' },
+    { id: '00000000-0000-4000-8000-000000000002', email: 'anya@example.com', display_name: 'Anya', favorite_character: 'Peach' },
+    { id: '00000000-0000-4000-8000-000000000003', email: 'dev@example.com', display_name: 'Dev', favorite_character: 'Bowser' },
   ],
   events: [], grand_prix: [], gp_participants: [], races: [], race_results: [], score_uploads: [], icon_templates: [],
 };

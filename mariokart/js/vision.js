@@ -387,11 +387,11 @@ export function matchIcon(crop, templates) {
  *   issues: [], canvas (straightened photo, for display/upload), engine
  * }
  */
-export async function analyzePhoto(file, { miiNames = [], templates = [], onProgress } = {}) {
+export async function analyzePhoto(file, { templates = [], onProgress } = {}) {
   const report = (status, progress) => onProgress?.({ status, progress });
   report('Loading the vision engine (first time ~20 s)', 0.02);
   const [cv, worker, bitmap] = await Promise.all([loadOpenCV(), getWorker(), fileToBitmap(file)]);
-  const opts = { extraNames: miiNames };
+  const opts = {};
   const mats = [];
   try {
     report('Finding the TV screen', 0.06);

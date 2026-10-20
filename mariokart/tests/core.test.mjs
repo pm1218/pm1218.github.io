@@ -104,24 +104,23 @@ test('player bars: coloured vs plain rows', () => {
   assert.deepEqual(final, { 1: true, 2: false, 3: false, 4: true });
 });
 
-test('identity suggestion: Mii name, then favourite character on a player bar', () => {
+test('identity suggestion: each member\'s character on a player bar', () => {
   const rows = [
-    { name: 'PRATEEK', character: 'Yoshi', characterConfidence: 0.7, human: true },
     { name: 'Mario', character: 'Mario', characterConfidence: 0.9, human: false },
     { name: 'Bowser', character: 'Bowser', characterConfidence: 0.9, human: true },
     { name: 'Peach', character: 'Peach', characterConfidence: 0.9, human: true },
-    { name: 'Peach', character: 'Baby Peach', characterConfidence: 0.9, human: false },
+    { name: 'Peach', character: 'Peach', characterConfidence: 0.9, human: false },
+    { name: 'Toad', character: 'Toad', characterConfidence: 0.9, human: true },
+    { name: 'Yoshi', character: 'Yoshi', characterConfidence: 0.9, human: true },
   ];
   const s = suggestIdentities(rows, profiles);
-  assert.equal(s[0].profile_id, 'u-pm', 'Mii name');
-  assert.equal(s[1].is_cpu, true, 'no player bar → CPU');
-  assert.equal(s[2].profile_id, 'u-dv', 'unique favourite Bowser → Dev');
-  assert.equal(s[3].profile_id, 'u-an', 'unique favourite Peach → Anya');
-  assert.equal(s[4].is_cpu, true);
-  // A shared favourite (Yoshi: Prateek + Sam) is weak evidence on its own.
-  const shared = suggestIdentities([{ name: 'Yoshi', character: 'Yoshi', characterConfidence: 0.5, human: true }], profiles);
-  assert.equal(shared[0].profile_id, null);
-  assert.equal(shared[0].is_cpu, false, 'a player we could not identify is not a CPU');
+  assert.equal(s[0].is_cpu, true, 'no player bar → CPU');
+  assert.equal(s[1].profile_id, 'u-dv', 'Bowser → Dev');
+  assert.equal(s[2].profile_id, 'u-an', 'Peach on a player bar → Anya');
+  assert.equal(s[3].is_cpu, true, 'a CPU Peach is not Anya');
+  assert.deepEqual([s[4].profile_id, s[4].is_cpu], [null, false], 'a player nobody races as → choose (guest)');
+  assert.equal(s[5].profile_id, null, 'Yoshi is shared by Prateek and Sam');
+  assert.match(s[5].reasons[0], /Yoshi is used by Prateek and Sam/);
 });
 
 function threeKartDraft() {
@@ -205,7 +204,8 @@ test('photo normalisation: final results → only the players, CPUs set aside', 
   assert.equal(draft.mode, 'total');
   assert.deepEqual(draft.participants.map((p) => p.ocr_name), ['Mario', 'Diddy Kong', 'Yoshi', 'Waluigi'], 'the 4 players on 7316');
   const yoshi = draft.participants.find((p) => p.character === 'Yoshi');
-  assert.equal(yoshi.profile_id, 'u-pm', 'Yoshi on a player bar → the Yoshi fan');
+  assert.equal(yoshi.profile_id, null, 'Yoshi is shared by two members → the uploader chooses');
+  assert.equal(draft.participants.find((p) => p.character === 'Diddy Kong').profile_id, null, 'nobody races as Diddy Kong');
   assert.equal(yoshi.final_total, 36);
   assert.equal(extras.length, 8);
   assert.throws(() => draftFromScreens({ screens: [fin, readFixture(fixture('5428'))], identities: [], profiles }), /Mixing screens/);

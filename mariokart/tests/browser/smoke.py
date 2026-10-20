@@ -157,7 +157,10 @@ def run():
 
         # --- profile + admin
         page.get_by_role("link", name="Me").click()
-        page.get_by_label("Favourite character").select_option("Rosalina")
+        expect(page.get_by_label("Mii name")).to_have_count(0)
+        page.get_by_label("Your character").select_option("Peach")
+        expect(page.get_by_text("Anya also races as Peach")).to_be_visible()
+        page.get_by_label("Your character").select_option("Rosalina")
         page.get_by_role("button", name="Save").click()
         expect(page.get_by_text("Saved")).to_be_visible()
         page.get_by_role("link", name="Admin").click()
