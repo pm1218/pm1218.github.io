@@ -107,7 +107,7 @@ All in [`supabase/schema.sql`](supabase/schema.sql).
 
 Relationships: event 1-N grand_prix 1-N gp_participants; grand_prix 1-N races 1-N race_results N-1 gp_participants. Storage bucket `score-photos` is private (8 MB, jpeg/png/webp).
 
-**RLS**: every table is readable only when `is_approved()` (JWT email ∈ `approved_users`). Writes: admins manage `approved_users`; members update only their own profile; members create events/drafts; creators or admins delete; `gp_participants`, `races`, `race_results`, `score_uploads` have **no** write policies — only `submit_grand_prix` writes them.
+**RLS**: game tables and profiles are readable only when `is_approved()` (JWT email ∈ `approved_users`). Member privacy: a member sees only their own `approved_users` row (admins see the whole list), and column privileges hide `profiles.email` from the browser entirely — members see each other's name and character only. The mailer uses the service role and still sees emails. Writes: admins manage `approved_users`; members update only their own profile; members create events/drafts; creators or admins delete; `gp_participants`, `races`, `race_results`, `score_uploads` have **no** write policies — only `submit_grand_prix` writes them.
 
 ## 5. Auth implementation
 
@@ -118,6 +118,8 @@ Relationships: event 1-N grand_prix 1-N gp_participants; grand_prix 1-N races 1-
 - **Verify** (`api.verifyCode`): `verifyOtp({ email, token, type: 'email' })` → session JWT stored by supabase-js, auto-refreshed.
 - **Session security**: access tokens are short-lived signed JWTs; refresh tokens rotate; all data access is re-authorised by RLS on every request, so removing someone from `approved_users` cuts access immediately even if they still hold a token. On boot the app also signs out sessions whose email is no longer approved.
 - **Whitelist management**: Admin tab → add email (optionally admin), toggle admin, remove. The last admin can't be removed (constraint trigger).
+- **Content Security Policy** (meta tag in `index.html`, since GitHub Pages can't send headers): scripts only from this site and jsDelivr, network only to this Supabase project and jsDelivr, no inline scripts, no plugins. `'unsafe-eval'` is allowed because OpenCV.js (Emscripten/embind) builds functions at runtime.
+- **CI supply chain**: the mailer workflow pins `actions/checkout` and `actions/setup-node` to exact commit hashes, because that job holds the Supabase secret key.
 - **Secrets**: the anon key in `config.js` is public by design (RLS-guarded). The Supabase secret key and SMTP password live only in GitHub Actions secrets — never in the repo or the browser.
 
 ## 6. Event + score models

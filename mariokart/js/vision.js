@@ -53,9 +53,16 @@ export function loadOpenCV() {
     cvPromise = loadScript(OPENCV_URL, 90000).then(() => new Promise((resolve, reject) => {
       const cv = window.cv;
       if (!cv) return reject(new Error('OpenCV failed to start'));
-      if (cv.Mat) return resolve(cv);
-      if (typeof cv.then === 'function') return cv.then((m) => { window.cv = m; resolve(m); });
-      cv.onRuntimeInitialized = () => resolve(window.cv);
+      // The Emscripten module is "thenable" (it has its own .then). Handing a
+      // thenable to resolve() makes the promise call .then again, forever,
+      // which freezes the tab, so strip it before resolving.
+      const done = (m) => {
+        if (m && typeof m.then === 'function') { try { delete m.then; } catch { m.then = undefined; } }
+        window.cv = m; resolve(m);
+      };
+      if (cv.Mat) return done(cv);
+      if (typeof cv.then === 'function') return cv.then(done);
+      cv.onRuntimeInitialized = () => done(window.cv);
     })).catch((e) => { cvPromise = null; throw e; });
   }
   return cvPromise;

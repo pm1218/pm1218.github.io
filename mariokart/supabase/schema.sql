@@ -513,24 +513,37 @@ alter table public.icon_templates  enable row level security;
 do $$
 declare t text;
 begin
-  -- Read access: any approved member can read everything.
-  foreach t in array array['approved_users','profiles','events','grand_prix','gp_participants',
+  -- Read access: any approved member can read the game data and profiles.
+  -- (The member list is NOT in here: see "Whitelist" below.)
+  foreach t in array array['profiles','events','grand_prix','gp_participants',
                            'races','race_results','score_uploads','icon_templates'] loop
     execute format('drop policy if exists mkw_read on public.%I', t);
     execute format('create policy mkw_read on public.%I for select to authenticated using (public.is_approved())', t);
   end loop;
 end $$;
 
--- Whitelist management: admins only.
+-- Whitelist: members see only their own row (to know whether they're an
+-- admin); admins see and manage the whole list. Nobody else learns who
+-- the members are or which emails they use.
+drop policy if exists mkw_read on public.approved_users;
+drop policy if exists mkw_self_read on public.approved_users;
+create policy mkw_self_read on public.approved_users for select to authenticated
+  using (email = public.current_email() or public.is_admin());
 drop policy if exists mkw_admin_write on public.approved_users;
 create policy mkw_admin_write on public.approved_users for all to authenticated
   using (public.is_admin()) with check (public.is_admin());
 
--- Profiles: you edit only your own.
+-- Profiles: members see each other's name and character, never the email.
+-- Column privileges hide profiles.email from the browser entirely (the
+-- mailer uses the service role, which keeps full access). Members can
+-- change only their own name and character.
+revoke select, insert, update, delete on public.profiles from anon, authenticated;
+grant select (id, display_name, mii_name, favorite_character, created_at) on public.profiles to authenticated;
+grant update (display_name, mii_name, favorite_character) on public.profiles to authenticated;
 drop policy if exists mkw_own_profile on public.profiles;
 create policy mkw_own_profile on public.profiles for update to authenticated
   using (id = auth.uid() and public.is_approved())
-  with check (id = auth.uid() and email = public.current_email());
+  with check (id = auth.uid());
 
 -- Events: members create; creator or admin edits/deletes.
 drop policy if exists mkw_event_insert on public.events;

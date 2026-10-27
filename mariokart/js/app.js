@@ -736,7 +736,7 @@ function viewMe() {
   }));
   const out = h('button', { class: 'btn block' }, 'Sign out');
   out.addEventListener('click', busy(out, async () => { await api.signOut(); state.me = null; go('#/login'); }));
-  page('Me', h('p', { class: 'muted' }, p.email), form, out);
+  page('Me', h('p', { class: 'muted' }, state.me.session.user.email), form, out);
 }
 
 // ==================================================================== admin

@@ -46,19 +46,20 @@ export const signOut = () => sb.auth.signOut();
 export const getSession = async () => (await sb.auth.getSession()).data.session;
 
 // ---------------------------------------------------------------- people
+const PROFILE_COLS = 'id,display_name,mii_name,favorite_character,created_at'; // profiles.email is hidden from the browser
 export async function loadMe(session) {
   const email = session.user.email;
   const [profile, approval] = await Promise.all([
-    sb.from('profiles').select('*').eq('id', session.user.id).maybeSingle().then(check),
+    sb.from('profiles').select(PROFILE_COLS).eq('id', session.user.id).maybeSingle().then(check),
     sb.from('approved_users').select('*').eq('email', email).maybeSingle().then(check),
   ]);
   return { session, profile, approved: Boolean(approval), isAdmin: Boolean(approval?.is_admin) };
 }
 
-export const listProfiles = async () => check(await sb.from('profiles').select('id,email,display_name,favorite_character').order('display_name'));
+export const listProfiles = async () => check(await sb.from('profiles').select('id,display_name,favorite_character').order('display_name'));
 
 export async function updateProfile(id, fields) {
-  return check(await sb.from('profiles').update(fields).eq('id', id).select().single());
+  return check(await sb.from('profiles').update(fields).eq('id', id).select(PROFILE_COLS).single());
 }
 
 export const listApproved = async () => check(await sb.from('approved_users').select('*').order('email'));
