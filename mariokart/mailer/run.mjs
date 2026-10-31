@@ -15,7 +15,7 @@
 // Recipients: the players in the session (or, for a recap, everyone who
 // played in the event) plus all admins — only addresses still approved.
 
-import { sendMail } from './smtp.mjs';
+import { sendMail, parseMailbox } from './smtp.mjs';
 import { sessionEmail, eventRecapEmail } from './templates.mjs';
 
 const GP_SELECT = '*,gp_participants(*),races(*,race_results(*)),events(id,name)';
@@ -40,6 +40,19 @@ export function makeDb(url, key, fetchImpl = fetch) {
 
 const iso = (d) => encodeURIComponent(d.toISOString());
 
+// MAIL_FROM should be "Kart Club <kart@yourdomain>" or just the address.
+// If it holds only a name (e.g. "Kart Club"), the SMTP username (for Proton,
+// the sending address) is used as the address. The value itself is never
+// logged, only what's wrong with it.
+export function senderFrom(env) {
+  const p = parseMailbox(env.MAIL_FROM);
+  if (p) return p.name ? `${p.name} <${p.address}>` : p.address;
+  const user = parseMailbox(env.SMTP_USER);
+  const name = String(env.MAIL_FROM || '').replace(/[<>"']/g, '').trim();
+  if (user) return name ? `${name} <${user.address}>` : user.address;
+  throw new Error('MAIL_FROM has no email address in it. Set it to: Kart Club <you@yourdomain>');
+}
+
 export async function runMailer(env, { fetchImpl = fetch, send = sendMail, now = new Date(), log = console.log } = {}) {
   const need = ['SUPABASE_URL', 'APP_URL', 'MAIL_FROM'];
   const key = env.SUPABASE_SECRET_KEY || env.SUPABASE_SERVICE_ROLE_KEY;
@@ -48,7 +61,7 @@ export async function runMailer(env, { fetchImpl = fetch, send = sendMail, now =
   const db = makeDb(env.SUPABASE_URL, key, fetchImpl);
   const dry = env.DRY_RUN === '1';
   const since = new Date(now.getTime() - Number(env.MAX_AGE_DAYS || 3) * 864e5);
-  const smtp = { host: env.SMTP_HOST, port: Number(env.SMTP_PORT || 587), user: env.SMTP_USER, pass: env.SMTP_PASS, from: env.MAIL_FROM };
+  const smtp = { host: env.SMTP_HOST, port: Number(env.SMTP_PORT || 587), user: env.SMTP_USER, pass: env.SMTP_PASS, from: senderFrom(env) };
   const report = { finalized: 0, sessions: 0, recaps: 0, failures: [] };
 
   report.finalized = await db.rpc('finalize_stale_events');

@@ -53,13 +53,23 @@ class Conn {
 const b64 = (s) => Buffer.from(s, 'utf8').toString('base64');
 const wrap76 = (s) => s.replace(/.{1,76}/g, (m) => m + CRLF).trimEnd();
 const encodeHeader = (s) => (/^[\x20-\x7e]*$/.test(s) ? s : `=?UTF-8?B?${b64(s)}?=`);
-const addr = (s) => { const m = String(s).match(/<([^>]+)>/); return (m ? m[1] : String(s)).trim(); };
+// Parse "Name <a@b>", "a@b", and common slips when pasting a secret:
+// surrounding quotes, a missing ">" or "<", "Name a@b" without brackets,
+// stray spaces inside the brackets. Returns { name, address } or null.
+export function parseMailbox(s) {
+  const str = String(s ?? '').trim().replace(/^(['"])([\s\S]*)\1$/, '$2').trim();
+  const m = str.match(/[^\s<>"',;:()[\]]+@[^\s<>"',;:()[\]]+\.[^\s<>"',;:()[\]]+/);
+  if (!m) return null;
+  const name = str.slice(0, m.index).replace(/[<>"]/g, '').trim();
+  return { name, address: m[0] };
+}
+const addr = (s) => parseMailbox(s)?.address || '';
 
 // "Name <a@b>" with a non-ASCII name → encoded display name.
 function formatAddress(s) {
-  const m = String(s).match(/^\s*(.*?)\s*<([^>]+)>\s*$/);
-  if (!m) return String(s).trim();
-  return m[1] ? `${encodeHeader(m[1].replace(/^"|"$/g, ''))} <${m[2]}>` : `<${m[2]}>`;
+  const p = parseMailbox(s);
+  if (!p) return String(s).trim();
+  return p.name ? `${encodeHeader(p.name)} <${p.address}>` : `<${p.address}>`;
 }
 
 export function buildMessage({ from, to, subject, text, html, date = new Date(), messageId }) {

@@ -176,3 +176,19 @@ test('templates render players, standings and links', () => {
   const e = eventRecapEmail(db.events[1], [db.grand_prix[1]], db.profiles, ENV.APP_URL);
   assert.match(e.text, /Champion: Dev/);
 });
+
+test('sender address survives common MAIL_FROM formatting slips', async () => {
+  const { parseMailbox } = await import('../mailer/smtp.mjs');
+  const { senderFrom } = await import('../mailer/run.mjs');
+  const ok = { name: 'Kart Club', address: 'kart@prateekm.me' };
+  for (const s of ['Kart Club <kart@prateekm.me>', '"Kart Club" <kart@prateekm.me>', '"Kart Club <kart@prateekm.me>"',
+    "'Kart Club <kart@prateekm.me>'", 'Kart Club kart@prateekm.me', 'Kart Club <kart@prateekm.me', 'Kart Club < kart@prateekm.me >',
+    ' Kart Club <kart@prateekm.me>\n']) assert.deepEqual(parseMailbox(s), ok, s);
+  assert.deepEqual(parseMailbox('kart@prateekm.me'), { name: '', address: 'kart@prateekm.me' });
+  assert.deepEqual(parseMailbox('"kart@prateekm.me"'), { name: '', address: 'kart@prateekm.me' });
+  assert.equal(parseMailbox('Kart Club'), null);
+  // name-only MAIL_FROM falls back to the SMTP username
+  assert.equal(senderFrom({ MAIL_FROM: 'Kart Club', SMTP_USER: 'kart@prateekm.me' }), 'Kart Club <kart@prateekm.me>');
+  assert.equal(senderFrom({ MAIL_FROM: '"Kart Club" <kart@prateekm.me>', SMTP_USER: 'x@y.com' }), 'Kart Club <kart@prateekm.me>');
+  assert.throws(() => senderFrom({ MAIL_FROM: 'Kart Club', SMTP_USER: 'kartclub' }), /no email address/);
+});
