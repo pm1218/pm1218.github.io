@@ -45,6 +45,7 @@ class Query {
   is(c, v) { this.filters.push((r) => (r[c] ?? null) === v); return this; }
   order(c, o = {}) { this.orders.push([c, o.ascending !== false]); return this; }
   limit() { return this; }
+  range(from, to) { this.rangeFrom = from; this.rangeTo = to; return this; }
   single() { this.mode = 'single'; return this; }
   maybeSingle() { this.mode = 'maybe'; return this; }
   then(res, rej) { return Promise.resolve().then(() => this.run()).then(res, rej); }
@@ -68,6 +69,7 @@ class Query {
       rows = t.filter(match);
       for (const [c, asc] of [...this.orders].reverse()) rows = [...rows].sort((a, b) => (String(a[c] ?? '') < String(b[c] ?? '') ? -1 : String(a[c] ?? '') > String(b[c] ?? '') ? 1 : 0) * (asc ? 1 : -1));
       rows = rows.map((r) => embed(this.table, r, this.sel));
+      if (this.rangeFrom != null) rows = rows.slice(this.rangeFrom, this.rangeTo + 1);
     }
     if (this.mode === 'single') return rows.length === 1 ? { data: rows[0], error: null } : { data: null, error: { message: 'JSON object requested, multiple (or no) rows returned' } };
     if (this.mode === 'maybe') return { data: rows[0] ?? null, error: null };
@@ -131,13 +133,5 @@ export function createClient() {
       onAuthStateChange: (cb) => { listeners.push(cb); return { data: { subscription: { unsubscribe() {} } } }; },
     },
     storage: { from: () => ({ upload: async () => ({ data: {}, error: null }), download: async () => ({ data: null, error: { message: 'none' } }), createSignedUrls: async (p) => ({ data: p.map(() => ({ signedUrl: '' })), error: null }) }) },
-    functions: {
-      invoke: async (name, { body }) => {
-        const gp = db.grand_prix.find((g) => g.id === body.gp_id);
-        gp.summary_sent_at = now();
-        window.__mails.push(body.gp_id);
-        return { data: { ok: true, recipients: db.approved_users.length }, error: null };
-      },
-    },
   };
 }

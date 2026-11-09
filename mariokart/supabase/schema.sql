@@ -209,6 +209,7 @@ create index if not exists grand_prix_event_idx on public.grand_prix(event_id);
 create index if not exists gp_participants_gp_idx on public.gp_participants(gp_id);
 create index if not exists races_gp_idx on public.races(gp_id);
 create index if not exists race_results_race_idx on public.race_results(race_id);
+create index if not exists score_uploads_gp_idx on public.score_uploads(gp_id);
 
 -- Next GP number inside an event.
 create or replace function public.set_gp_seq()
@@ -247,20 +248,28 @@ returns boolean language sql stable security definer set search_path = public as
 $$;
 
 -- Marks every event idle for 12 h as finalized (at last activity + 12 h).
--- Called by the app on load and by the mailer on every run.
-create or replace function public.finalize_stale_events()
+-- The job version runs inside the database every 10 minutes (pg_cron,
+-- set up at the end of this file); the RPC lets the app and mailer run it too.
+create or replace function public.finalize_stale_events_job()
 returns int language plpgsql security definer set search_path = public as $$
 declare n int;
 begin
-  if not (public.is_approved() or public.is_service_role()) then
-    raise exception 'not approved' using errcode = '42501';
-  end if;
   update public.events e
      set finalized_at = public.event_last_activity(e.id) + interval '12 hours'
    where e.finalized_at is null
      and public.event_last_activity(e.id) < now() - interval '12 hours';
   get diagnostics n = row_count;
   return n;
+end $$;
+revoke all on function public.finalize_stale_events_job() from public, anon, authenticated;
+
+create or replace function public.finalize_stale_events()
+returns int language plpgsql security definer set search_path = public as $$
+begin
+  if not (public.is_approved() or public.is_service_role()) then
+    raise exception 'not approved' using errcode = '42501';
+  end if;
+  return public.finalize_stale_events_job();
 end $$;
 
 create or replace function public.finalize_event(p_event_id uuid)
@@ -593,3 +602,91 @@ create policy mkw_photo_insert on storage.objects for insert to authenticated
 drop policy if exists mkw_photo_delete on storage.objects;
 create policy mkw_photo_delete on storage.objects for delete to authenticated
   using (bucket_id = 'score-photos' and public.is_admin());
+
+-- ---------------------------------------------------------------------
+-- Instant emails: start the mailer the moment there is something to send
+-- ---------------------------------------------------------------------
+-- GitHub runs the scheduled mailer only every few hours in practice, so
+-- when a session is confirmed or an event is finalized the database asks
+-- GitHub to run it now (pg_net sends the request after the commit; a
+-- failure never blocks the confirm). The hourly schedule is the backup.
+--
+-- One-time setup (README → "Emails"): create a fine-grained GitHub token
+-- for this repo with "Actions: Read and write", then in the SQL Editor:
+--   select vault.create_secret('<token>', 'github_dispatch_token');
+-- Without the secret this is a no-op and the hourly run sends the emails.
+do $$ begin
+  create extension if not exists pg_net with schema extensions;
+exception when others then raise notice 'pg_net not available (%): emails go out on the hourly run', sqlerrm;
+end $$;
+
+create or replace function public.dispatch_mailer()
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  v_token text;
+  v_repo  constant text := 'pm1218/pm1218.github.io';   -- owner/repo that holds kart-mailer.yml
+begin
+  begin
+    select decrypted_secret into v_token from vault.decrypted_secrets
+     where name = 'github_dispatch_token' limit 1;
+  exception when others then return;   -- Vault missing: hourly run only
+  end;
+  if v_token is null or v_token = '' then return; end if;
+  begin
+    perform net.http_post(
+      url     := format('https://api.github.com/repos/%s/actions/workflows/kart-mailer.yml/dispatches', v_repo),
+      body    := '{"ref":"main"}'::jsonb,
+      headers := jsonb_build_object(
+        'Authorization', 'Bearer ' || v_token,
+        'Accept', 'application/vnd.github+json',
+        'X-GitHub-Api-Version', '2022-11-28',
+        'User-Agent', 'kart-club-db',
+        'Content-Type', 'application/json'),
+      timeout_milliseconds := 10000);
+  exception when others then raise warning 'kart mailer kick failed: %', sqlerrm;
+  end;
+end $$;
+revoke all on function public.dispatch_mailer() from public, anon, authenticated;
+
+create or replace function public.kick_mailer_on_confirm()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  perform public.dispatch_mailer();
+  return null;
+end $$;
+
+-- Statement level, so one auto-finalize pass that closes several events
+-- starts the mailer only once.
+create or replace function public.kick_mailer_on_finalize()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if exists (select 1 from new_rows n join old_rows o on o.id = n.id
+              where n.finalized_at is not null and o.finalized_at is null) then
+    perform public.dispatch_mailer();
+  end if;
+  return null;
+end $$;
+revoke all on function public.kick_mailer_on_confirm() from public, anon, authenticated;
+revoke all on function public.kick_mailer_on_finalize() from public, anon, authenticated;
+drop function if exists public.kick_mailer();
+
+drop trigger if exists grand_prix_kick_mailer on public.grand_prix;
+create trigger grand_prix_kick_mailer
+  after update of status on public.grand_prix
+  for each row when (new.status = 'confirmed' and old.status is distinct from 'confirmed')
+  execute function public.kick_mailer_on_confirm();
+
+drop trigger if exists events_kick_mailer on public.events;
+create trigger events_kick_mailer
+  after update on public.events
+  referencing old table as old_rows new table as new_rows
+  for each statement execute function public.kick_mailer_on_finalize();
+
+-- Auto-finalize inside the database every 10 minutes (pg_cron), so an
+-- event's recap goes out ~12 h after its last upload even if nobody opens
+-- the app. Without pg_cron the app and the hourly mailer run still do it.
+do $$ begin
+  create extension if not exists pg_cron with schema pg_catalog;
+  perform cron.schedule('kart-finalize-stale', '*/10 * * * *', 'select public.finalize_stale_events_job()');
+exception when others then raise notice 'pg_cron not available (%): auto-finalize runs from the app and mailer', sqlerrm;
+end $$;

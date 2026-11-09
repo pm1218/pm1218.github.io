@@ -39,7 +39,7 @@ def run():
         page.on("pageerror", lambda e: errors.append(str(e)))
         page.on("console", lambda m: m.type == "error" and errors.append(m.text))
         page.on("dialog", lambda d: d.accept())
-        page.route(re.compile(r".*supabase-js@2/\+esm$"), lambda r: r.fulfill(body=MOCK, content_type="text/javascript"))
+        page.route(re.compile(r".*supabase-js@[0-9.]+/\+esm$"), lambda r: r.fulfill(body=MOCK, content_type="text/javascript"))
         page.route(re.compile(r".*/js/config\.js$"), lambda r: r.fulfill(body=CONFIG, content_type="text/javascript"))
 
         # --- login with an emailed one-time code

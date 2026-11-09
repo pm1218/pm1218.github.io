@@ -1,0 +1,35 @@
+# Kart Club: run the unit tests on every push and pull request that
+# touches the app. No secrets are used or needed.
+name: Kart Club tests
+
+on:
+  push:
+    paths: ['mariokart/**', '.github/workflows/kart-tests.yml']
+  pull_request:
+    paths: ['mariokart/**', '.github/workflows/kart-tests.yml']
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          sparse-checkout: mariokart
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+      - name: Unit tests
+        working-directory: mariokart
+        run: npm test
+      - name: CDN libraries the app loads all resolve
+        working-directory: mariokart
+        run: |
+          urls=$(grep -ohE "https://cdn\.jsdelivr\.net/npm/[^'\" )]+" index.html js/*.js js/views/*.js | sort -u)
+          echo "$urls"
+          for u in $urls; do curl -fsSIL --retry 2 -o /dev/null "$u" || { echo "::error::Not found on the CDN: $u"; exit 1; }; done

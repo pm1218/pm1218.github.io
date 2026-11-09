@@ -5,9 +5,13 @@
 name: Kart Club mailer
 
 on:
+  # Normally started within seconds by the database (see "Instant emails"
+  # in mariokart/supabase/schema.sql) when a session is confirmed or an
+  # event is finalized. The schedule is only a backup: GitHub runs it every
+  # few hours in practice, whatever the cron says.
+  workflow_dispatch: {}
   schedule:
-    - cron: '*/10 * * * *'   # GitHub may delay scheduled runs by a few minutes
-  workflow_dispatch: {}       # "Run workflow" button for an immediate send
+    - cron: '17 * * * *'
 
 concurrency:
   group: kart-mailer

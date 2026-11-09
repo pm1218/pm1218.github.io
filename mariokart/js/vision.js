@@ -25,6 +25,7 @@
 // The uploader always reviews and corrects before confirming.
 
 import { planScreen, finishScreen, isolateDigits, detectHumans } from './wii-layout.js';
+import { createOcrPool, defaultPoolSize } from './ocr-pool.js';
 
 const TESSERACT_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
 // docs.opencv.org can't be loaded cross-site reliably; jsDelivr serves the same 4.10 build.
@@ -68,15 +69,19 @@ export function loadOpenCV() {
   return cvPromise;
 }
 
-let workerPromise = null;
-async function getWorker() {
-  if (!workerPromise) {
-    workerPromise = (async () => {
-      await loadScript(TESSERACT_URL, 60000);
-      return window.Tesseract.createWorker('eng', 1);
-    })().catch((e) => { workerPromise = null; throw e; });
+// OCR runs on a small pool of Tesseract workers (1–3, by device) so the
+// ~100 passes per photo run in parallel. setOcrWorkers(n) overrides the size
+// (the vision-check page uses it to compare timings).
+let poolPromise = null;
+let poolSize = null;
+export function setOcrWorkers(n) { poolSize = n; poolPromise = null; }
+function getPool() {
+  if (!poolPromise) {
+    poolPromise = loadScript(TESSERACT_URL, 60000)
+      .then(() => createOcrPool(() => window.Tesseract.createWorker('eng', 1), poolSize || defaultPoolSize()))
+      .catch((e) => { poolPromise = null; throw e; });
   }
-  return workerPromise;
+  return poolPromise;
 }
 
 // ------------------------------------------------------------------ helpers
@@ -273,9 +278,8 @@ function pass1Variants(cv, lo) {
   return out;
 }
 
-async function recognizeWords(worker, canvas, psm, whitelist = '') {
-  await worker.setParameters({ tessedit_pageseg_mode: String(psm), tessedit_char_whitelist: whitelist, preserve_interword_spaces: '1' });
-  const { data } = await worker.recognize(canvas);
+async function recognizeWords(pool, canvas, psm, whitelist = '') {
+  const data = await pool.recognize(canvas, { tessedit_pageseg_mode: String(psm), tessedit_char_whitelist: whitelist, preserve_interword_spaces: '1' });
   return (data.words || []).map((w) => ({ text: w.text, confidence: w.confidence, bbox: w.bbox }));
 }
 
@@ -397,7 +401,7 @@ export function matchIcon(crop, templates) {
 export async function analyzePhoto(file, { templates = [], onProgress } = {}) {
   const report = (status, progress) => onProgress?.({ status, progress });
   report('Loading the vision engine (first time ~20 s)', 0.02);
-  const [cv, worker, bitmap] = await Promise.all([loadOpenCV(), getWorker(), fileToBitmap(file)]);
+  const [cv, pool, bitmap] = await Promise.all([loadOpenCV(), getPool(), fileToBitmap(file)]);
   const opts = {};
   const mats = [];
   try {
@@ -406,44 +410,54 @@ export async function analyzePhoto(file, { templates = [], onProgress } = {}) {
     mats.push(lo, hi);
     bitmap.close?.();
 
-    // Pass 1
+    // Pass 1: three whole-screen variants, read in parallel.
     const variants = pass1Variants(cv, lo);
     const ocr = { width: lo.cols, height: lo.rows, variants: {} };
-    let n = 0;
-    for (const [name, canvas] of Object.entries(variants)) {
-      report('Reading the screen', 0.1 + 0.25 * (n++ / 3));
-      ocr.variants[name] = await recognizeWords(worker, canvas, 11);
-    }
+    report('Reading the screen', 0.1);
+    let done1 = 0;
+    const names1 = Object.keys(variants);
+    const words1 = await Promise.all(names1.map((name) => recognizeWords(pool, variants[name], 11)
+      .then((w) => { report('Reading the screen', 0.1 + 0.25 * (++done1 / names1.length)); return w; })));
+    names1.forEach((name, i) => { ocr.variants[name] = words1[i]; });
     const plan = planScreen(ocr, opts);
     if (!plan.slots.length) {
       return { kind: plan.kind, phase: null, rows: [], issues: plan.issues, canvas: matToCanvas(cv, lo), engine: 'opencv+tesseract' };
     }
 
-    // Pass 2
-    const cellOcr = {};
+    // Pass 2: prepare every row's crops (OpenCV, on this thread), then read
+    // all of them at once across the worker pool. Results keep their order,
+    // so this gives exactly the same answer as reading them one by one.
+    report(`Reading ${plan.slots.length} rows`, 0.35);
+    let total2 = 0; let done2 = 0;
+    const tick = (p) => p.then((v) => { report(`Reading ${plan.slots.length} rows`, 0.35 + 0.6 * (++done2 / total2)); return v; });
     const bars = [];
-    for (const [i, s] of plan.slots.entries()) {
-      report(`Reading row ${i + 1} of ${plan.slots.length}`, 0.35 + 0.6 * (i / plan.slots.length));
-      const cell = { name: [], points: [], human: null };
+    const rowJobs = plan.slots.map((s) => {
+      let nameJobs = [];
       const nc = cropMat(cv, hi, s.cells.name, k, 64);
       if (nc) {
-        for (const v of nameVariants(cv, nc)) cell.name.push(await recognizeWords(worker, v, 7, LETTERS));
+        nameJobs = nameVariants(cv, nc).map((v) => tick(recognizeWords(pool, v, 7, LETTERS)));
         nc.delete();
       }
+      let pointJobs = [];
       const pc = cropMat(cv, hi, s.cells.points, k, 80);
       if (pc) {
-        for (const m of digitMasks(cv, pc)) {
-          const iso = isolateDigits(m);
-          if (!iso) continue;
-          const ws = await recognizeWords(worker, grayToCanvas(iso), 7, '0123456789');
-          const text = ws.map((w) => w.text).join('');
-          if (text) cell.points.push({ text, confidence: Math.min(...ws.map((w) => w.confidence)) });
-        }
+        pointJobs = digitMasks(cv, pc).map(isolateDigits).filter(Boolean)
+          .map((iso) => tick(recognizeWords(pool, grayToCanvas(iso), 7, '0123456789')));
         pc.delete();
       }
-      cellOcr[s.place] = cell;
+      total2 += nameJobs.length + pointJobs.length;
       bars.push({ place: s.place, ...barColour(cv, lo, s.cells.name, plan.textH) });
-    }
+      return { place: s.place, nameJobs, pointJobs };
+    });
+    const cells = await Promise.all(rowJobs.map(async (r) => ({
+      place: r.place,
+      name: await Promise.all(r.nameJobs),
+      points: (await Promise.all(r.pointJobs))
+        .map((ws) => ({ text: ws.map((w) => w.text).join(''), confidence: Math.min(...ws.map((w) => w.confidence)) }))
+        .filter((x) => x.text),
+    })));
+    const cellOcr = {};
+    for (const c of cells) cellOcr[c.place] = { name: c.name, points: c.points, human: null };
     const humans = detectHumans(plan.kind, bars);
     for (const s of plan.slots) cellOcr[s.place].human = humans[s.place] ?? null;
 

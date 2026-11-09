@@ -1,4 +1,5 @@
-// Kart Club mailer — run by the GitHub Action every 10 minutes (or by hand).
+// Kart Club mailer — run by the GitHub Action, started by the database the
+// moment there's something to send (hourly schedule as backup, or by hand).
 //
 // 1. finalizes events idle for 12 hours
 // 2. emails a summary for each newly confirmed VS session

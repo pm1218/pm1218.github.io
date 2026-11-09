@@ -23,7 +23,11 @@
   <p id="status">Starting…</p>
   <div id="out"></div>
   <script type="module">
-    import { analyzePhoto } from '../../js/vision.js';
+    import { analyzePhoto, setOcrWorkers } from '../../js/vision.js';
+    import { defaultPoolSize } from '../../js/ocr-pool.js';
+    // ?workers=1 compares against reading one pass at a time.
+    const workers = Number(new URLSearchParams(location.search).get('workers')) || defaultPoolSize();
+    setOcrWorkers(workers);
 
     const ROWS = [['Mario', 46, true], ['Luigi', 46, true], ['Waluigi', 45, true], ['Yoshi', 29, true], ['Toad', 28], ['Baby Mario', 23], ['King Boo', 20], ['Peach', 19], ['Dry Bones', 16], ['Baby Peach', 8], ['Bowser', 7], ['Donkey Kong', 5]];
     const BARS = ['#f08a24', '#c046d8', '#2aa8e0', '#58c43a'];
@@ -60,13 +64,13 @@
       try {
         const r = await analyzePhoto(blob, { onProgress: (p) => { status.textContent = `${p.status} (${Math.round(p.progress * 100)}%)`; } });
         const secs = ((performance.now() - t0) / 1000).toFixed(1);
-        let summary = `${r.kind}/${r.phase} in ${secs}s`;
+        let summary = `${r.kind}/${r.phase} in ${secs}s with ${workers} OCR worker${workers > 1 ? 's' : ''}`;
         if (truth) {
           const names = r.rows.filter((x, i) => x.name === truth[i]?.[0]).length;
           const pts = r.rows.filter((x, i) => x.points === truth[i]?.[1]).length;
           const players = r.rows.filter((x, i) => Boolean(x.human) === Boolean(truth[i]?.[2])).length;
           summary += ` — names ${names}/12, totals ${pts}/12, player flags ${players}/12`;
-          document.body.dataset.result = JSON.stringify({ kind: r.kind, names, pts, players });
+          document.body.dataset.result = JSON.stringify({ kind: r.kind, names, pts, players, secs: Number(secs), workers });
         }
         status.innerHTML = `<span class="ok">OK</span> ${summary}`;
         out.append(r.canvas);

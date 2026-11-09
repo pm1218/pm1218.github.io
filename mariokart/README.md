@@ -8,17 +8,20 @@ mariokart/
 ├── css/app.css                                   mobile-first styles, light + dark
 ├── js/
 │   ├── config.js      Supabase URL + anon key (public by design)
-│   ├── app.js         hash router + every view (events, GP entry, stats, profile, admin)
-│   ├── api.js         Supabase data layer (auth, tables, RPC, storage)
+│   ├── app.js         hash router + start-up
+│   ├── core.js        shared state and navigation helpers
+│   ├── views/         one file per screen: auth, events, session (results + score entry), stats, account; widgets.js shared bits
+│   ├── api.js         Supabase data layer (auth, tables, RPC, storage), 30 s read cache, paging
 │   ├── data.js        points table, characters, cups → tracks
 │   ├── scoring.js     internal scoring model, normalisation, 4-race rule (client side)
 │   ├── wii-layout.js  Mario Kart Wii screen reader: OCR words → rows, digit isolation, decoding (pure, tested)
-│   ├── vision.js      OpenCV.js + Tesseract.js pipeline on the phone, icon template matching
+│   ├── vision.js      OpenCV.js + Tesseract.js pipeline on the phone, icon template matching (loaded only when a photo is used)
+│   ├── ocr-pool.js    1–3 Tesseract workers so a photo's OCR passes run in parallel
 │   ├── identity.js    "which member drove which kart" suggestions
 │   ├── analytics.js   power rankings, Elo, consistency, tracks, head-to-head, insights
 │   ├── text.js, ui.js helpers
 ├── supabase/
-│   ├── schema.sql                         tables, constraints, RLS, whitelist trigger, submit RPC
+│   ├── schema.sql                         tables, constraints, RLS, whitelist trigger, submit RPC, instant-email trigger, pg_cron auto-finalize
 ├── mailer/           session summary + event recap emails (dependency-free SMTP), run by GitHub Actions
 └── tests/            unit tests, OCR fixtures from 17 real photos, desktop evaluation tools,
                       Playwright mobile smoke test, in-browser vision check page
@@ -29,7 +32,7 @@ mariokart/
 ## 1. Assumptions
 
 1. **Hosting must be GitHub Pages** (your request). Pages serves static files only — no Python/Node server, no database, no server-side sessions — so everything dynamic needs a free hosted backend.
-2. **Group size < 25, a few GPs per session.** Data stays tiny (thousands of rows), so analytics are computed in the browser from the full dataset; no caching or background jobs.
+2. **Group size < 25, a few GPs per session.** Data stays tiny (thousands of rows), so analytics are computed in the browser from the full dataset. Reads are cached for 30 s in the tab (cleared by any write) so moving between screens is instant.
 3. **Mario Kart Wii rules:** a Grand Prix is exactly 4 races; 12 karts; race points 15-12-10-8-7-6-5-4-3-2-1-0; max GP total 60. Cups map to fixed track orders, so picking the cup pre-fills the 4 tracks.
 4. **Karts:** a GP can include members, guests and CPUs. Only members are ranked, but every entered kart counts toward field size. You may enter just the humans; placements still range over 1-12 (e.g. 1st, 5th, 9th) because CPUs finished in between.
 5. **Mario Kart Wii only.** Switch scores are a separate game and out of scope for now (a later project). Two Wii screens are read: the **after-race standings** (12 full-width bars; "+gained" while rows are in race order, then re-sorted by total) and the **final results** ("You got Nth place!", two columns of six). Each row shows the character's name, its icon and the total (the group doesn't use Mii names); human players' rows have a coloured bar. Photos are phone shots of a TV: angled, glare, moiré, sometimes cropped.
@@ -37,7 +40,7 @@ mariokart/
 5b. **Players only:** typically 4 players are tracked (members, or guests). CPUs race but are **not stored**: the photo reader drops rows without a player bar (listing them so a missed player can be added back), manual entry has no CPU option, and `submit_grand_prix` rejects CPU rows. Race placements are still out of all 12 karts so points match the game; session places are among the players.
 6. **Character icons are not shipped.** Nintendo artwork isn't redistributable. On the Wii the character's name is printed on the row, so the character comes from the text; icons are only needed for rows showing a Mii name, and that matcher **learns from your own confirmed photos** (each confirmed GP saves its icon crops as labelled templates).
 7. **Login:** an 8-digit email code (OTP). Supabase Auth handles code generation, single use and expiry (set to 600 s = 10 min).
-8. **Email:** your own SMTP account — Proton Mail (port 587, STARTTLS, SMTP token on a custom-domain address) or any other. Supabase Edge Functions block outbound port 587, so summary emails are sent by a **GitHub Actions** job (`.github/workflows/kart-mailer.yml`) every 10 minutes instead.
+8. **Email:** your own SMTP account — Proton Mail (port 587, STARTTLS, SMTP token on a custom-domain address) or any other. Supabase Edge Functions block outbound port 587, so summary emails are sent by a **GitHub Actions** job (`.github/workflows/kart-mailer.yml`) instead. The database starts that job the moment a session is confirmed or an event is finalized (step below), so emails arrive within a minute or two; an hourly schedule is the backup.
 8a. **Events are live until finalized:** an event's standings are pinned at the top of Stats while it is live. It ends when its creator or an admin taps *Finalize now*, or automatically **12 hours after the last upload** (session created or scores confirmed). After that no sessions can be added (an admin can reopen it), and a final-standings recap is emailed.
 8b. **Who gets email:** a session summary goes to the members who played in that session plus all admins; an event recap goes to everyone who played in any of the event's sessions plus all admins. Guests have no address, and removed members are skipped.
 9. **Corrections:** confirmed GPs are locked; an admin can reopen one to fix it.
@@ -278,12 +281,21 @@ All code is in this folder — no placeholders. The only values you supply are y
    | `MAIL_FROM` | `Kart Club <that address>` |
    | `APP_URL` | `https://prateekm.me/mariokart/` |
 
-   Then **Actions → Kart Club mailer → Run workflow** once to test. It runs every 10 minutes after that, sends a summary for each newly confirmed session (only from the last 3 days, so old ones aren't emailed), auto-finalizes idle events and sends their recap. GitHub pauses scheduled workflows in repos with no commits for 60 days — re-enable it on the Actions tab if that happens.
+   Then **Actions → Kart Club mailer → Run workflow** once to test. Each run sends a summary for each newly confirmed session (only from the last 3 days, so old ones aren't emailed), auto-finalizes idle events and sends their recap.
+
+   **Instant sends (recommended).** GitHub only runs scheduled workflows every few hours in practice, so let the database start the mailer itself:
+   1. GitHub → Settings → Developer settings → **Fine-grained tokens** → Generate. Repository access: *Only select repositories* → this repo. Permissions → Repository → **Actions: Read and write** (nothing else). Pick the longest expiry you're comfortable with.
+   2. Supabase → SQL Editor, run once (paste your token):
+      `select vault.create_secret('github_pat_…', 'github_dispatch_token');`
+      To replace it later: `select vault.update_secret((select id from vault.secrets where name = 'github_dispatch_token'), 'github_pat_new…');`
+   3. Re-run `schema.sql` if you haven't since this change (it enables `pg_net` and `pg_cron`).
+
+   Now confirming a session or finalizing an event starts the mailer within seconds, and `pg_cron` auto-finalizes idle events every 10 minutes inside the database. If the token is missing or expired, nothing breaks: emails just wait for the hourly backup run. (GitHub also pauses scheduled workflows in repos with no commits for 60 days; the database-started runs keep working regardless.)
 4. **Frontend** — put the project URL and anon key (Project Settings → API) in `js/config.js`, commit, push. GitHub Pages publishes `https://prateekm.me/mariokart/` within a minute.
 5. **Add members** in the Admin tab. Everyone picks the character they race as on the *Me* tab — score screens show character names, so that's how photos recognise players (pick different characters; shared ones are left for the uploader to choose).
 
 **Upgrading an existing database**: re-run the whole `supabase/schema.sql` in the SQL editor. It is idempotent and keeps existing data (adds VS mode, optional tracks, the no-CPU rule, and event finalization).
 
-**Tests**: `npm test` (Node 20+) runs 16 unit tests, including accuracy on the 17 real-photo fixtures; `supabase/schema.sql` was verified against PostgreSQL 16 (whitelist trigger, RLS, 4-race rule, ties, last-admin guard); `tests/browser/smoke.py` drives the whole UI at phone size with Playwright against an in-memory Supabase mock; open `/mariokart/tests/browser/vision-check.html` to run the photo reader in your own browser.
+**Tests**: `npm test` (Node 20+) runs 29 unit tests (also on every push, via `.github/workflows/kart-tests.yml`), including accuracy on the 17 real-photo fixtures; `supabase/schema.sql` was verified against PostgreSQL 16 (whitelist trigger, RLS, 4-race rule, ties, last-admin guard); `tests/browser/smoke.py` drives the whole UI at phone size with Playwright against an in-memory Supabase mock; open `/mariokart/tests/browser/vision-check.html` to run the photo reader in your own browser.
 
 **Limits worth knowing**: free Supabase projects pause after a week of no activity (one click to resume). Photo reading takes ~20-40 s per photo on a phone (the first run also downloads ~10 MB of OCR/CV engines, cached afterwards). Take photos straight on and close enough that the list fills most of the frame — far, angled shots of the final screen are where totals get missed.
