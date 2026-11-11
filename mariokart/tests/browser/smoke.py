@@ -116,6 +116,16 @@ def run():
         expect(page.get_by_role("heading", name="Live standings")).to_be_visible()
         shot(page, "06-event")
         page.get_by_role("button", name="+ New VS session (4 races)").click()
+        # changing a player swaps in their usual character; a hand-picked one stays
+        page.get_by_role("tab", name="Final totals").click()
+        page.get_by_role("button", name="Add all members").click()
+        expect(page.get_by_label("Kart 1 character")).to_have_value("Peach")      # Anya (members are A-Z)
+        page.get_by_label("Player 2").select_option(label="Guest (not a member)") # frees Dev
+        page.get_by_label("Player 1").select_option(label="Dev")
+        expect(page.get_by_label("Kart 1 character")).to_have_value("Bowser")     # followed the player
+        page.get_by_label("Kart 3 character").select_option("Mario")              # Prateek's, picked by hand
+        page.get_by_label("Player 3").select_option(label="Anya")
+        expect(page.get_by_label("Kart 3 character")).to_have_value("Mario")      # kept
         page.get_by_role("tab", name="📷 Photo").click()
         page.get_by_role("radio", name="4 after-race screens").click()
         expect(page.get_by_text("0 of 4 race photos added")).to_be_visible()

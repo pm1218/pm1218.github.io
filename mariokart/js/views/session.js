@@ -94,13 +94,17 @@ function viewGpEntry(gp) {
       ], p.profile_id || '__guest', { 'aria-label': `Player ${i + 1}` });
       who.addEventListener('change', () => {
         const v = who.value;
+        // The character follows the player when it was blank or just the
+        // previous player's usual character; one picked by hand stays.
+        const prev = members.find((x) => x.id === p.profile_id);
+        const autoChar = !p.character || (prev && p.character === prev.favorite_character);
         if (v === '__guest') {
           p.profile_id = null; p.is_cpu = false;
           if (!p.label || members.some((m) => m.display_name === p.label)) p.label = 'Guest';
         } else {
           const m = members.find((x) => x.id === v);
           p.profile_id = v; p.is_cpu = false; p.label = m.display_name;
-          if (!p.character && m.favorite_character) p.character = m.favorite_character;
+          if (autoChar) p.character = m.favorite_character || null;
         }
         persist(); render();
       });
