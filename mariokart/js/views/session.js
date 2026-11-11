@@ -177,7 +177,12 @@ function viewGpEntry(gp) {
     return h('section', {}, h('h2', {}, 'Final totals'), h('p', { class: 'muted small' }, `GP points after race 4 (0–${MAX_GP_TOTAL}).`),
       h('div', { class: 'totals' }, draft.participants.map((p) => {
         const inp = h('input', { type: 'number', inputmode: 'numeric', min: '0', max: String(MAX_GP_TOTAL), step: '1', value: p.final_total ?? '', 'aria-label': `${p.label} total` });
-        inp.addEventListener('input', () => { p.final_total = inp.value === '' ? null : Number(inp.value); persist(); refresh(); });
+        const mark = () => {
+          const bad = !Number.isInteger(p.final_total) || p.final_total < 0 || p.final_total > MAX_GP_TOTAL;
+          inp.classList.toggle('needs', bad); inp.setAttribute('aria-invalid', String(bad));
+        };
+        mark();
+        inp.addEventListener('input', () => { p.final_total = inp.value === '' ? null : Number(inp.value); mark(); persist(); refresh(); });
         return h('label', { class: 'total-row' }, h('span', {}, p.label || 'Kart'), inp);
       })));
   }
@@ -264,8 +269,8 @@ function viewGpEntry(gp) {
       draft = d;
       tab = d.mode;
       persist();
-      toast(`Found ${d.participants.length} player${d.participants.length === 1 ? '' : 's'} — check them below, then confirm.`);
       render();
+      body.querySelector('.check-panel')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
     }));
 
     return h('section', {},
@@ -299,8 +304,20 @@ function viewGpEntry(gp) {
       table(['#', 'Read', 'Player?', 'Pts'], s.rows.map((r) => [r.place, r.name || '—', r.human ? 'yes' : '', r.points ?? '—']), { stickyFirst: false }));
   }
 
+  // ---- check what the photo read (shown after analysis until confirmed)
+  const checkStatus = h('p', { class: 'check-status' });
+  function checkPanel() {
+    if (!photo.analysis || tab === 'photo') return null;
+    const n = draft.participants.length;
+    return h('section', { class: 'card check-panel' },
+      h('h2', {}, 'Check what was read'),
+      h('p', {}, `The photo found ${n} player${n === 1 ? '' : 's'}. Check each player, character and ${draft.mode === 'races' ? 'race placement' : 'total'} below and fix anything marked in red. Then tap `, h('strong', {}, 'Confirm & email the players'), ' at the bottom.'),
+      checkStatus);
+  }
+
   // ---- review + confirm
   const confirmBtn = h('button', { type: 'button', class: 'btn primary block big' }, 'Confirm & email the players');
+  const confirmHint = h('button', { type: 'button', class: 'confirm-hint', hidden: true, onclick: () => summary.scrollIntoView({ block: 'start', behavior: 'smooth' }) });
   confirmBtn.addEventListener('click', busy(confirmBtn, async () => {
     const payload = toPayload(draft);
     if (!confirm(`Confirm VS ${gp.seq} (${draft.mode === 'races' ? '4 races' : 'final totals'}) and email the summary to the players and admins?`)) return;
@@ -331,19 +348,28 @@ function viewGpEntry(gp) {
       v.ok ? null : h('ul', { class: 'issues' }, v.errors.map((e) => h('li', {}, e))),
     ].filter(Boolean));
     confirmBtn.disabled = !v.ok || tab === 'photo';
+    // Say why the button is disabled right next to it, not only in Review.
+    const more = v.errors.length - 1;
+    confirmHint.hidden = v.ok;
+    confirmHint.textContent = v.ok ? '' : `⚠ ${v.errors[0]}${more > 0 ? ` (+${more} more)` : ''}`;
+    checkStatus.className = `check-status ${v.ok ? 'ok' : 'todo'}`;
+    checkStatus.textContent = v.ok
+      ? '✓ Everything needed is filled in. If it all matches the TV, confirm.'
+      : `${v.errors.length} thing${v.errors.length === 1 ? '' : 's'} to fix before you can confirm.`;
   }
 
   function render() {
     clear(body).append(...[
       tabs(),
       tab === 'photo' ? photoEditor() : null,
+      checkPanel(),
       analysisPanel(),
       tab !== 'photo' ? kartEditor() : null,
       tab === 'total' ? totalsEditor() : null,
       tab === 'total' ? tracksEditor() : null,
       tab === 'races' ? racesEditor() : null,
       tab !== 'photo' ? summary : null,
-      tab !== 'photo' ? h('div', { class: 'sticky-action' }, confirmBtn) : null,
+      tab !== 'photo' ? h('div', { class: 'sticky-action' }, confirmHint, confirmBtn) : null,
     ].filter(Boolean));
     refresh();
   }
