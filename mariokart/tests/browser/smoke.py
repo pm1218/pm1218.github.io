@@ -103,7 +103,8 @@ def run():
         page.get_by_role("button", name="Add all members").click()
         for name, total in [("Prateek", "41"), ("Anya", "50"), ("Dev", "61")]:
             page.get_by_label(f"{name} total").fill(total)
-        expect(page.get_by_text("Dev needs a total from 0 to 60.")).to_be_visible()
+        expect(page.locator(".summary").get_by_text("Dev needs a total from 0 to 60.")).to_be_visible()
+        expect(page.locator(".confirm-hint")).to_contain_text("Dev needs a total")
         page.get_by_label("Dev total").fill("47")
         # optional tracks with final totals
         page.get_by_label("Race 1 track").select_option("Coconut Mall")
