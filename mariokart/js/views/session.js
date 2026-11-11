@@ -231,7 +231,7 @@ function viewGpEntry(gp) {
     const analyze = h('button', { type: 'button', class: 'btn primary block', disabled: filled < needed }, 'Analyze photo' + (needed > 1 ? 's' : ''));
     const progress = h('div', { class: 'progress', hidden: true }, h('div', { class: 'bar' }), h('span', { class: 'progress-label' }));
     analyze.addEventListener('click', busy(analyze, async () => {
-      const vision = await import('./vision.js');
+      const vision = await import('../vision.js');
       progress.hidden = false;
       const setP = (frac, label) => { progress.querySelector('.bar').style.width = `${Math.round(frac * 100)}%`; progress.querySelector('.progress-label').textContent = label; };
       const templates = await api.loadTemplates().catch(() => []);
@@ -302,7 +302,7 @@ function viewGpEntry(gp) {
     if (!confirm(`Confirm VS ${gp.seq} (${draft.mode === 'races' ? '4 races' : 'final totals'}) and email the summary to the players and admins?`)) return;
     if (photo.analysis) {
       confirmBtn.textContent = 'Uploading photos…';
-      const vision = await import('./vision.js');
+      const vision = await import('../vision.js');
       const paths = [];
       for (const [i, c] of photo.colorCanvases.entries()) {
         paths.push(await api.uploadPhoto(gp.id, await vision.compressForUpload(c), photo.kind === 'final' ? 'final' : `race${i + 1}`));
