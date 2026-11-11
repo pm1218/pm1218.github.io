@@ -19,7 +19,7 @@ const stdev = (xs) => {
 };
 const byTime = (a, b) => String(a.confirmed_at || '').localeCompare(String(b.confirmed_at || '')) || a.seq - b.seq;
 
-export const POWER_WEIGHTS = { points: 0.45, place: 0.3, wins: 0.15, form: 0.1 };
+export const POWER_WEIGHTS = { points: 0.45, result: 0.45, form: 0.1 };
 export const POWER_PRIOR_GPS = 2; // Bayesian shrinkage strength
 export const ELO_K = 32;
 export const ELO_START = 1500;
@@ -55,32 +55,84 @@ function ewma(xs, alpha = 0.5) {
   return xs.slice(1).reduce((acc, x) => alpha * x + (1 - alpha) * acc, xs[0]);
 }
 
+// ---------------------------------------------------------------- strength
+// A player's strength is their lifetime Elo rating (below), which already
+// accounts for who they beat. Guests and anyone unrated count as an average
+// player (ELO_START). A VS session's strength is the average strength of the
+// players in it.
+export function strengthMap(history, profiles = []) {
+  return new Map(eloRatings(history, profiles).map((r) => [r.profile_id, r.elo]));
+}
+const strengthOf = (p, strengths) => (p.profile_id && strengths.get(p.profile_id)) || ELO_START;
+
+/** Field strength of one VS session: rating, gap from an average field, label. */
+export function vsStrength(gp, strengths) {
+  const ps = gp.participants || [];
+  if (!ps.length) return null;
+  const rating = Math.round(mean(ps.map((p) => strengthOf(p, strengths))));
+  const diff = rating - ELO_START;
+  const label = diff >= 40 ? 'Tough field' : diff >= 15 ? 'Above-average field' : diff <= -40 ? 'Soft field' : diff <= -15 ? 'Below-average field' : 'Average field';
+  return { rating, diff, label };
+}
+
 /**
- * Power ranking (0-100):
- *   raw   = 0.45·(avg points / 60) + 0.30·(avg field-relative place score)
- *         + 0.15·(win rate) + 0.10·(form = EWMA of points share, α=0.5)
- *   power = 100 · (n·raw + k·fieldMean) / (n + k),  k = 2 GPs
- * The shrinkage keeps someone who won their only GP from outranking a
- * player who has won 6 of 10.
+ * Power ranking (0-100), adjusted for strength of opponents:
+ *   points  (45%) – average points share (points / 60). Points come from
+ *                   race placements among all 12 karts, so they don't
+ *                   depend on which players were there.
+ *   result  (45%) – each VS is scored by who you finished ahead of and how
+ *                   strong they were: a performance rating
+ *                     perf = avg opponent strength + 800·(share of players beaten − ½)
+ *                   turned into 0–1 as the chance of beating an average
+ *                   player (1500) with that rating, then averaged. Beating a
+ *                   tough field counts for more than beating a soft one, and
+ *                   losing to a tough field costs less.
+ *   form    (10%) – recent points share (EWMA, α = 0.5).
+ *   power = 100 · (n·raw + k·fieldMean) / (n + k), k = 2 sessions, so one
+ *   lucky session can't top the table.
+ * Strengths come from `history` (default: the same sessions), so an
+ * event-only view still knows how strong each player is overall.
  */
-export function powerRankings(gps, profiles) {
-  const records = playerRecords(gps);
+export function powerRankings(gps, profiles, { history = gps } = {}) {
+  const strengths = strengthMap(history, profiles);
+  const records = new Map();
+  for (const gp of [...gps].sort(byTime)) {
+    const ps = gp.participants || [];
+    for (const p of ps) {
+      if (!p.profile_id) continue;
+      const opps = ps.filter((q) => q !== p);
+      if (!opps.length) continue;
+      const oppAvg = mean(opps.map((q) => strengthOf(q, strengths)));
+      const share = mean(opps.map((q) => (p.final_total > q.final_total ? 1 : p.final_total === q.final_total ? 0.5 : 0)));
+      const perf = oppAvg + 800 * (share - 0.5);
+      const rec = {
+        total: p.final_total,
+        place: p.final_place,
+        normPts: p.final_total / MAX_GP_TOTAL,
+        result: 1 / (1 + 10 ** ((ELO_START - perf) / 400)),
+        oppAvg,
+        won: p.final_place === 1,
+        podium: p.final_place <= 3,
+      };
+      if (!records.has(p.profile_id)) records.set(p.profile_id, []);
+      records.get(p.profile_id).push(rec);
+    }
+  }
   const rows = [];
   for (const [profileId, recs] of records) {
-    const avgPts = mean(recs.map((r) => r.total));
     const raw =
       POWER_WEIGHTS.points * mean(recs.map((r) => r.normPts)) +
-      POWER_WEIGHTS.place * mean(recs.map((r) => r.placeScore)) +
-      POWER_WEIGHTS.wins * mean(recs.map((r) => (r.won ? 1 : 0))) +
+      POWER_WEIGHTS.result * mean(recs.map((r) => r.result)) +
       POWER_WEIGHTS.form * ewma(recs.map((r) => r.normPts));
     rows.push({
       profile_id: profileId,
       gps: recs.length,
-      avgPts,
+      avgPts: mean(recs.map((r) => r.total)),
       avgPlace: mean(recs.map((r) => r.place)),
       winRate: mean(recs.map((r) => (r.won ? 1 : 0))),
       podiumRate: mean(recs.map((r) => (r.podium ? 1 : 0))),
       form: ewma(recs.map((r) => r.total)),
+      sos: mean(recs.map((r) => r.oppAvg)),
       raw,
     });
   }
@@ -96,6 +148,7 @@ export function powerRankings(gps, profiles) {
       winRate: round(r.winRate * 100, 0),
       podiumRate: round(r.podiumRate * 100, 0),
       form: round(r.form),
+      sos: Math.round(r.sos),
     }))
     .sort((a, b) => b.power - a.power || b.avgPts - a.avgPts)
     .map((r, i) => ({ rank: i + 1, ...r }));

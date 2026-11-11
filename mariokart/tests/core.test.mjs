@@ -255,3 +255,52 @@ test('track report: overall and per player, including final-score sessions', () 
   assert.deepEqual([pm.plays, pm.placedRaces, pm.avgPlace, pm.wins, pm.avgSessionPlace], [2, 1, 1, 1, 1]);
   assert.equal(r.trackCount, 9, '8 race-by-race tracks + Rainbow Road');
 });
+
+// ---- strength of field
+const mkGp = (id, seq, players, races = []) => ({
+  id, event_id: 'e', seq, confirmed_at: `2026-01-01T00:${String(seq).padStart(2, '0')}:00Z`, entry_mode: races.length ? 'races' : 'total',
+  participants: players.map(([pid, total], i, all) => ({
+    id: `${id}-${pid}`, profile_id: pid, label: pid, final_total: total,
+    final_place: 1 + all.filter((o) => o[1] > total).length,
+  })),
+  races,
+});
+const SP = ['A', 'B', 'C', 'D', 'E'].map((x) => ({ id: x, display_name: x }));
+
+test('power rankings: beating a strong field beats the same result against a weak one', async () => {
+  const { powerRankings, vsStrength, strengthMap } = await import('../js/analytics.js');
+  const gps = [];
+  let seq = 1;
+  for (let i = 0; i < 5; i++) gps.push(mkGp(`b${i}`, seq++, [['B', 50], ['E', 20]]));   // B is strong
+  for (let i = 0; i < 5; i++) gps.push(mkGp(`d${i}`, seq++, [['E', 50], ['D', 20]]));   // D is weak
+  gps.push(mkGp('x', seq++, [['A', 40], ['B', 30]]));   // A beats the strong player
+  gps.push(mkGp('y', seq++, [['C', 40], ['D', 30]]));   // C: same score line vs the weak one
+  const power = powerRankings(gps, SP);
+  const A = power.find((r) => r.name === 'A'); const C = power.find((r) => r.name === 'C');
+  assert.equal(A.avgPts, C.avgPts); assert.equal(A.winRate, C.winRate);
+  assert.ok(A.power > C.power, `A ${A.power} should outrank C ${C.power}`);
+  assert.ok(A.sos > 1500 && C.sos < 1500, `opponent strength A ${A.sos}, C ${C.sos}`);
+  // losing to a strong player costs less than losing to a weak one
+  const B = strengthMap(gps, SP).get('B'); const D = strengthMap(gps, SP).get('D');
+  assert.ok(B > 1500 && D < 1500);
+  const strengths = strengthMap(gps, SP);
+  assert.equal(vsStrength(gps.find((g) => g.id === 'x'), strengths).diff > 0, true);
+  assert.match(vsStrength(gps.find((g) => g.id === 'y'), strengths).label, /Soft|Below/);
+  // an event-only view still uses lifetime strengths
+  const eventOnly = powerRankings([gps.find((g) => g.id === 'x'), gps.find((g) => g.id === 'y')], SP, { history: gps });
+  assert.ok(eventOnly.find((r) => r.name === 'A').power > eventOnly.find((r) => r.name === 'C').power);
+});
+
+test('2-player sessions count toward track stats and best-track points', async () => {
+  const { trackReport } = await import('../js/analytics.js');
+  const race = (n, track, a, b) => ({ race_number: n, track, results: [
+    { participant_id: 'g1-A', placement: a, points: [15, 12, 10, 8, 7, 6, 5, 4, 3, 2, 1, 0][a - 1] },
+    { participant_id: 'g1-B', placement: b, points: [15, 12, 10, 8, 7, 6, 5, 4, 3, 2, 1, 0][b - 1] }] });
+  const gp = mkGp('g1', 1, [['A', 49], ['B', 34]], [race(1, 'Coconut Mall', 1, 4), race(2, 'Rainbow Road', 2, 3), race(3, 'Coconut Mall', 1, 6), race(4, 'Moo Moo Meadows', 3, 2)]);
+  const rep = trackReport([gp], SP);
+  const a = rep.players.find((p) => p.name === 'A');
+  assert.ok(a && rep.players.find((p) => p.name === 'B'), 'both players of a 2-player session are in track stats');
+  const mall = a.tracks.find((t) => t.track === 'Coconut Mall');
+  assert.equal(mall.placedRaces, 2); assert.equal(mall.avgPoints, 15);
+  assert.equal(a.tracks[0].track, 'Coconut Mall', 'best track first');
+});

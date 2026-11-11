@@ -1,7 +1,7 @@
 // Events list, new event form, and one event with its sessions.
 import * as api from '../api.js';
 import { ENGINE_CLASSES, EVENT_KINDS } from '../data.js';
-import { AUTO_FINALIZE_HOURS, eventState, eventSummary } from '../analytics.js';
+import { AUTO_FINALIZE_HOURS, eventState, eventSummary, strengthMap, vsStrength } from '../analytics.js';
 import { busy, emptyState, fmtDate, fmtDateTime, h, selectEl, spinner, toast } from '../ui.js';
 import { go, page, state } from '../core.js';
 import { gpTitle, summaryTable } from './widgets.js';
@@ -48,7 +48,8 @@ function newEventForm() {
 
 export async function viewEvent(id) {
   page('Event', spinner());
-  const [ev, gps] = await Promise.all([api.getEvent(id), api.listGps(id)]);
+  const [ev, gps, history] = await Promise.all([api.getEvent(id), api.listGps(id), api.confirmedGps()]);
+  const strengths = strengthMap(history, state.profiles);
   const confirmed = gps.filter((g) => g.status === 'confirmed');
   const st = eventState({ ...ev, grand_prix: gps });
   const isLive = st.state === 'live';
@@ -72,7 +73,7 @@ export async function viewEvent(id) {
           h('div', {},
             h('div', { class: 'li-title' }, gpTitle(g)),
             h('div', { class: 'li-sub' }, g.status === 'confirmed'
-              ? `${g.engine_class} · 🏆 ${winner ? winner.label : '—'} ${winner ? `(${winner.final_total})` : ''}`
+              ? `${g.engine_class} · 🏆 ${winner ? winner.label : '—'} ${winner ? `(${winner.final_total})` : ''} · ${vsStrength(g, strengths)?.label ?? ''}`
               : `${g.engine_class} · waiting for scores`)),
           h('span', { class: `pill ${g.status === 'confirmed' ? 'ok' : 'warn'}` }, g.status === 'confirmed' ? 'Confirmed' : 'Draft'));
       }))

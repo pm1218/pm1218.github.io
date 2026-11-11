@@ -216,6 +216,8 @@ details[open] > summary::after { content: "▴"; }
 .total-row.bad select { border-color: var(--bad); }
 
 .summary { margin-top: 16px; }
+.field-strength { margin: 10px 0 0; }
+.field-strength .muted { display: block; margin-top: 2px; }
 .check-panel { border-left: 4px solid var(--accent); scroll-margin-top: 70px; }
 .check-panel h2 { margin-top: 0; }
 .check-status { margin: 8px 0 0; font-weight: 700; }

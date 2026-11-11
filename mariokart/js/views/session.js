@@ -6,10 +6,11 @@ import { suggestIdentities } from '../identity.js';
 import { busy, charBadge, clear, fmtDateTime, h, selectEl, spinner, table, toast } from '../ui.js';
 import { go, page, profileName, state, store } from '../core.js';
 import { cloneCanvas, gpTitle, medal } from './widgets.js';
+import { strengthMap, vsStrength } from '../analytics.js';
 
 export async function viewGp(id) {
   page('VS session', spinner());
-  const gp = await api.getGp(id);
+  const [gp, history] = await Promise.all([api.getGp(id), api.confirmedGps()]);
   if (gp.status !== 'confirmed') return viewGpEntry(gp);
 
   const title = gpTitle(gp);
@@ -50,7 +51,16 @@ export async function viewGp(id) {
 
   page(title,
     h('p', { class: 'muted' }, h('a', { href: `#/events/${gp.event_id}` }, `← ${gp.events?.name ?? 'Event'}`), ` · ${gp.engine_class} · ${gp.entry_mode === 'races' ? '4 races entered' : 'final totals'}`),
-    results, raceTable, photoPaths.length ? h('section', {}, h('h2', {}, 'Photos'), photos) : null, actions);
+    results, fieldStrength(gp, history), raceTable, photoPaths.length ? h('section', {}, h('h2', {}, 'Photos'), photos) : null, actions);
+}
+
+// How strong the players in this VS were, from their lifetime ratings.
+function fieldStrength(gp, history) {
+  const vs = vsStrength(gp, strengthMap(history, state.profiles));
+  if (!vs) return null;
+  const gap = vs.diff === 0 ? 'average' : `${vs.diff > 0 ? '+' : ''}${vs.diff} vs. an average field`;
+  return h('p', { class: 'field-strength' }, h('strong', {}, `💪 ${vs.label}`), ` · strength ${vs.rating} (${gap})`,
+    h('span', { class: 'muted small' }, ' Based on the players\' overall ratings; results against tougher fields count for more in power rankings.'));
 }
 
 // --------------------------------------------------------- score entry view

@@ -19,8 +19,8 @@ function liveCard(ev, gps) {
 }
 
 function powerTable(rows) {
-  return table(['Player', 'Power', 'Sessions', 'Avg pts', 'Avg place', 'Wins', 'Podium', 'Form'],
-    rows.map((r) => [`${r.rank}. ${r.name}`, h('strong', {}, r.power), r.gps, r.avgPts, r.avgPlace, `${r.winRate}%`, `${r.podiumRate}%`, r.form]));
+  return table(['Player', 'Power', 'Sessions', 'Opp. strength', 'Avg pts', 'Avg place', 'Wins', 'Podium', 'Form'],
+    rows.map((r) => [`${r.rank}. ${r.name}`, h('strong', {}, r.power), r.gps, r.sos, r.avgPts, r.avgPlace, `${r.winRate}%`, `${r.podiumRate}%`, r.form]));
 }
 
 export async function viewStats(eventId) {
@@ -38,7 +38,8 @@ export async function viewStats(eventId) {
   if (!gps.length) return page('Stats', ...live, header, emptyState('No confirmed sessions yet', 'Stats appear once scores are confirmed.'));
 
   const P = state.profiles;
-  const power = powerRankings(gps, P);
+  // Strength of each player comes from all sessions, even in an event view.
+  const power = powerRankings(gps, P, { history: allGps });
   const elo = eloRatings(gps, P);
   const cons = consistencyMetrics(gps, P);
   const tracks = trackReport(gps, P);
@@ -93,7 +94,7 @@ export async function viewStats(eventId) {
 
   page('Stats', ...live, header,
     h('p', { class: 'muted small' }, `${gps.length} confirmed VS session${gps.length === 1 ? '' : 's'} · ${raceGps} with race-by-race detail`),
-    section('Power rankings', 'Blend of points share (45%), finishing place vs. field (30%), win rate (15%) and recent form (10%), shrunk toward the group average for players with few sessions.', powerTable(power)),
+    section('Power rankings', 'Points share (45%), results against the field (45%) and recent form (10%). Results are weighed by how strong the other players were (their overall ratings), so beating a tough field counts for more and losing to one costs less. "Opp. strength" is the average rating of the players you raced (1500 = average). Players with few sessions are pulled toward the group average.', powerTable(power)),
     section('Skill rating (Elo)', 'Every session counts as head-to-head duels between players by final total. Starts at 1500.',
       table(['Player', 'Elo', 'Sessions'], elo.map((r) => [`${r.rank}. ${r.name}`, h('strong', {}, r.elo), r.gps]))),
     section('Consistency', 'Consistency 0-100: 100 = same place every race, 50 = as scattered as a random finisher. Volatility = average swing in total between consecutive sessions.',
